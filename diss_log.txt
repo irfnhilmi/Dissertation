@@ -1,0 +1,2350 @@
+===== R Script Source Code =====
+#1 #####
+setwd("/Users/tescocharlie/Desktop/Dissertation")
+
+# === Log File Setup ===
+# Define log file
+log_file <- "full_log.txt"
+
+# Open connection for both output and messages
+log_con <- file(log_file, open = "a")  # 'a' for append
+
+# Log script source (optional)
+cat("===== R Script Source Code =====\n", file = log_file)
+cat(readLines("your_script.R"), sep = "\n", file = log_file, append = TRUE)
+
+# Start logging output and messages
+sink(log_con, split = TRUE)              # Normal output
+sink(log_con, type = "message", split = TRUE)  # Messages, warnings, errors
+
+# Timestamp
+cat("\n===== Script started at", format(Sys.time()), "=====\n")
+
+install.packages(c("tidyverse", "zoo", "forecast", "vars", "tseries", "readxl", "psych", "lubridate", "dynlm", "sandwich", "lmtest", "ARDL", "urca", "car", "scales", "grid", "strucchange", "AICcmodavg", "broom", "stargazer", "sjPlot", "knitr"))
+# Load libraries
+library(tidyverse)
+library(zoo)
+library(forecast)
+library(vars)
+library(tseries)
+library(readxl)
+library(psych)
+library(lubridate)
+library(dynlm)
+library(sandwich)
+library(lmtest)
+library(ARDL)
+library(urca)
+library(car)
+library(scales)
+library(grid)
+library(strucchange)
+library(broom)
+library(stargazer)
+library(sjPlot)
+library(knitr)
+
+#2 #####
+rus_gdp <- read_excel("GDP Data.xlsx")
+rus_gdp_simple <- read_excel("GDP Simplified.xlsx")
+##used excel to clean data
+
+
+#3 #####
+gsdb <- read.csv("GSDB_V4.csv")
+
+#filter for Russia sanctions
+rus_sanctions <- gsdb %>%
+  filter(sanctioned_state == "Russia")
+
+#drop unwanted years
+rus_sanctions <- rus_sanctions %>%
+  filter(!(begin %in% c(1993)))
+
+#drop irrelevant columns
+cols_to_drop <- c("case_id", "sanctioned_state", "target_mult", "success")  # Drop multi targets & success
+rus_sanctions <- rus_sanctions %>%
+  dplyr::select(-all_of(cols_to_drop))
+
+# Reorder descr_trade trade columns
+rus_sanctions <- rus_sanctions %>%
+  relocate(descr_trade, .before = trade)
+
+
+# Define custom weights for sanction categories
+sanction_weights <- c(
+  financial = 3,
+  military = 2,
+  trade    = 3,
+  arms     = 2,
+  travel   = 1,
+  other    = 1
+)
+
+# Compute Sanctions Intensity Index
+rus_sanctions$sanction_intensity <- with(rus_sanctions,
+                                            financial * sanction_weights["financial"] +
+                                              military  * sanction_weights["military"] +
+                                              trade     * sanction_weights["trade"] +
+                                              arms      * sanction_weights["arms"] +
+                                              travel    * sanction_weights["travel"] +
+                                              other    * sanction_weights["other"]
+)
+
+
+# Reorder descr_trade trade columns
+rus_sanctions <- rus_sanctions %>%
+  relocate(sanction_intensity, .before = sender_mult)
+
+
+# Classify sanctions purely by year
+rus_sanctions <- rus_sanctions %>%
+  mutate(
+    sanction_category = case_when(
+      begin == 2014 ~ "crimea",
+      begin >= 2022 ~ "invasion",
+      begin %in% c(2008, 2017, 2020, 2021) ~ "other",
+      TRUE ~ "other"
+    )
+  )
+
+rus_sanctions <- rus_sanctions %>%
+  mutate(
+    is_crimea = ifelse(sanction_category == "crimea", 1, 0),
+    is_invasion = ifelse(sanction_category == "invasion", 1, 0),
+    is_other = ifelse(sanction_category == "other", 1, 0)
+  )
+
+# Create a function to convert year to quarter (default Q1)
+year_to_quarter <- function(year, quarter = "Q1") {
+  paste(year, quarter)
+}
+
+# Add start quarters based on your information
+rus_sanctions_quarter <- rus_sanctions %>%
+  mutate(
+    start_quarter = case_when(
+      sanctioning_state == "Georgia" ~ "2008 Q3",
+      sanctioning_state == "Australia" & begin == 2014 ~ "2014 Q1",
+      sanctioning_state == "Australia" & begin == 2022 ~ "2022 Q1",
+      sanctioning_state == "Canada" & begin == 2014 ~ "2014 Q1",
+      sanctioning_state == "Canada" & begin == 2022 ~ "2022 Q1",
+      sanctioning_state == "EU" ~ "2014 Q1",
+      sanctioning_state == "EU, Montenegro, Iceland, Albania, Liechtenstein, Norway, Ukraine" ~ "2014 Q1",
+      sanctioning_state == "Japan" & begin == 2014 ~ "2014 Q1",
+      sanctioning_state == "Japan" & begin == 2022 ~ "2022 Q1",
+      sanctioning_state == "New Zealand" & begin == 2014 ~ "2014 Q1",
+      sanctioning_state == "New Zealand" & begin == 2022 ~ "2022 Q1",
+      sanctioning_state == "Switzerland" & begin == 2014 ~ "2014 Q1",
+      sanctioning_state == "Switzerland" & begin == 2022 ~ "2022 Q1",
+      sanctioning_state == "United Kingdom" & begin == 2014 ~ "2014 Q1",
+      sanctioning_state == "United Kingdom" & begin == 2021 ~ "2021 Q2",
+      sanctioning_state == "United Kingdom" & begin == 2022 ~ "2022 Q1",
+      sanctioning_state == "United States" & begin == 2014 ~ "2014 Q1",
+      sanctioning_state == "United States" & begin == 2017 ~ "2017 Q3",
+      sanctioning_state == "United States" & begin == 2020 ~ "2020 Q3",
+      sanctioning_state == "United States" & begin == 2022 ~ "2022 Q1",
+      sanctioning_state == "EU, Macedonia, Albania, Kosovo" ~ "2022 Q1",
+      sanctioning_state == "G7, EU" ~ "2022 Q1",
+      sanctioning_state == "Germany" & begin == 2022 ~ "2022 Q1",
+      sanctioning_state == "Iceland" ~ "2022 Q1",
+      sanctioning_state == "Korea, South" ~ "2022 Q1",
+      sanctioning_state == "Liechtenstein" ~ "2022 Q1",
+      sanctioning_state == "Monaco" ~ "2022 Q1",
+      sanctioning_state == "Norway" ~ "2022 Q1",
+      sanctioning_state == "Poland" ~ "2022 Q1",
+      sanctioning_state == "Singapore" ~ "2022 Q1",
+      sanctioning_state == "Taiwan" ~ "2022 Q1",
+      sanctioning_state == "United States, EU, United Kingdom, Canada, France, Germany, Italy, Japan" ~ "2022 Q1",
+      sanctioning_state == "United States, United Kingdom, Canada" ~ "2022 Q1",
+      sanctioning_state == "United States, United Kingdom, Japan, Canada" ~ "2022 Q1",
+      sanctioning_state == "Czech Republic" ~ "2023 Q1",
+      sanctioning_state == "Kazakhstan" ~ "2023 Q1",
+      sanctioning_state == "Latvia, Lithuania, Estonia" ~ "2023 Q1",
+      sanctioning_state == "Ukraine" & begin == 2023 ~ "2023 Q1",
+      sanctioning_state == "United States, United Kingdom" ~ "2023 Q1",
+      TRUE ~ paste0(begin, " Q1") # Default to Q1 if no specific info
+    ),
+    
+    # Add end quarters (most are ongoing)
+    end_quarter = case_when(
+      sanctioning_state == "Georgia" ~ "2011 Q2", # Only Georgia has ended
+      end == 2023 ~ "2023 Q4", # Assuming current sanctions end at 2023 Q4
+      TRUE ~ NA_character_ # Ongoing sanctions have no end quarter
+    )
+  )
+
+# Create a binary indicator for each quarter (1998 Q1 - 2024 Q4)
+quarters <- expand.grid(
+  year = 1998:2024,
+  quarter = paste0("Q", 1:4)
+) %>%
+  mutate(
+    quarter_label = paste(year, quarter),
+    date = as.Date(paste(
+      year, 
+      case_when(
+        quarter == "Q1" ~ "01-01",
+        quarter == "Q2" ~ "04-01",
+        quarter == "Q3" ~ "07-01",
+        quarter == "Q4" ~ "10-01"
+      ), 
+      sep = "-"
+    ), format = "%Y-%m-%d")
+  ) %>%
+  arrange(date)
+    
+# Function to check if a sanction was active in a given quarter
+    is_active <- function(start_q, end_q, current_q, quarters_df) {
+      start_idx <- which(quarters_df$quarter_label == start_q)
+      current_idx <- which(quarters_df$quarter_label == current_q)
+      
+      if (is.na(end_q)) {
+        # Ongoing sanction - active from start quarter onward
+        current_idx >= start_idx
+      } else {
+        end_idx <- which(quarters_df$quarter_label == end_q)
+        current_idx >= start_idx & current_idx <= end_idx
+      }
+    }
+    
+# Create a panel dataset with binary indicators
+    rus_sanctions_quarter <- rus_sanctions_quarter %>%
+      rowwise() %>%
+      do({
+        tibble(
+          sanction_id = .$sanctioning_state,
+          start_quarter = .$start_quarter,
+          end_quarter = .$end_quarter,
+          quarter = quarters$quarter_label,
+          date = quarters$date,
+          active = mapply(is_active, 
+                          .$start_quarter, 
+                          .$end_quarter, 
+                          quarters$quarter_label, 
+                          MoreArgs = list(quarters_df = quarters)),
+          # Carry forward all other sanction attributes
+          descr_trade = .$descr_trade,
+          trade = .$trade,
+          arms = .$arms,
+          military = .$military,
+          financial = .$financial,
+          travel = .$travel,
+          other = .$other,
+          sanction_intensity = .$sanction_intensity,
+          sender_mult = .$sender_mult,
+          objective = .$objective,
+          sanction_category = .$sanction_category,
+          is_crimea = .$is_crimea,
+          is_invasion = .$is_invasion,
+          is_other = .$is_other
+        )
+      }) %>%
+      ungroup()
+    
+
+colnames(rus_sanctions_quarter)[colnames(rus_sanctions_quarter) == "quarter"] <- "year"
+
+    
+
+#only active
+rus_sanctions_quarter <- rus_sanctions_quarter %>%
+      filter(active == TRUE)
+
+#drop irrelevant columns
+  cols_to_drop <- c("date", "active")  
+  rus_sanctions_quarter <- rus_sanctions_quarter %>%
+  dplyr::select(-all_of(cols_to_drop))
+
+
+# Reorder descr_trade trade columns
+rus_sanctions_quarter <- rus_sanctions_quarter %>%
+  relocate(year, .before = start_quarter)
+
+
+# Add weighted scores for each sanction type and total sanction intensity
+rus_sanctions_quarter <- rus_sanctions_quarter %>%
+  mutate(
+    financial_weighted = financial * sanction_weights["financial"],
+    military_weighted  = military  * sanction_weights["military"],
+    trade_weighted     = trade     * sanction_weights["trade"],
+    arms_weighted      = arms      * sanction_weights["arms"],
+    travel_weighted    = travel    * sanction_weights["travel"],
+    other_weighted     = other     * sanction_weights["other"],
+    
+    sanction_intensity = financial_weighted + military_weighted +
+      trade_weighted + arms_weighted +
+      travel_weighted + other_weighted
+  )
+
+
+# Summarise by year and sanction category
+rus_agg_sanctions <- rus_sanctions_quarter %>%
+  group_by(year, sanction_category) %>%
+  summarise(total_intensity = sum(sanction_intensity, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(
+    names_from = sanction_category,
+    values_from = total_intensity,
+    names_prefix = "",
+    values_fill = 0
+  ) %>%
+  rename(
+    year = year,
+    total_crimea_intensity = crimea,
+    total_invasion_intensity = invasion,
+    total_other_intensity = other
+  ) %>%
+  mutate(
+    total_intensity_score = total_crimea_intensity + total_invasion_intensity + total_other_intensity
+  ) %>%
+  arrange(year)
+
+
+write.csv(rus_agg_sanctions, file = "russia_sanctions.csv", row.names = FALSE)
+
+
+
+
+
+
+#4 #####
+crude_oil_full <- read_excel("crude oil.xlsx")
+# Create a new column for quarters
+crude_oil_full$year <- paste0(year(crude_oil_full$Date), " Q", quarter(crude_oil_full$Date))
+
+# Ensure Date column is in Date format
+crude_oil_full$Date <- as.Date(crude_oil_full$Date)
+
+# Create year_Quarter column
+crude_oil <- crude_oil_full %>%
+  mutate(year = paste0(year(Date), " Q", quarter(Date)))
+
+# Group by year_Quarter and calculate averages for both prices
+crude_oil <- crude_oil_full %>%
+  group_by(year) %>%
+  summarise(
+    WTI_price = mean(`Cushing, OK WTI Spot Price FOB (Dollars per Barrel)`, na.rm = TRUE),
+    Brent_price = mean(`Europe Brent Spot Price FOB (Dollars per Barrel)`, na.rm = TRUE)
+  )
+
+
+#5 #####
+real_gdp_growth <- read_excel("real gdp growth.xlsx")
+
+# Convert first column to numeric safely
+real_gdp_growth[[1]] <- as.numeric(real_gdp_growth[[1]])
+
+# Drop rows with NA years (usually header rows or footnotes)
+real_gdp_growth <- real_gdp_growth[!is.na(real_gdp_growth[[1]]), ]
+
+# Create quarterly time points
+year_quarters <- seq(min(real_gdp_growth[[1]]), max(real_gdp_growth[[1]]), by = 0.25)
+
+# Function to convert annual % growth to index (base 100)
+growth_to_index <- function(growth) {
+  index <- numeric(length(growth))
+  index[1] <- 100
+  for (i in 2:length(growth)) {
+    index[i] <- index[i - 1] * (1 + growth[i - 1] / 100)
+  }
+  return(index)
+}
+
+# Apply to all regions (skip year column)
+index_data <- as.data.frame(
+  lapply(real_gdp_growth[-1], growth_to_index)
+)
+
+# Interpolate index to quarterly using spline
+interpolated_index <- as.data.frame(
+  lapply(index_data, function(col) spline(real_gdp_growth[[1]], col, xout = year_quarters, method = "natural")$y)
+)
+
+# Convert to quarterly % changes
+quarterly_growth <- as.data.frame(
+  lapply(interpolated_index, function(x) c(NA, diff(x) / head(x, -1) * 100))
+)
+
+# Create formatted year-quarter labels
+formatted_years <- paste0(
+  floor(year_quarters), " Q", round((year_quarters - floor(year_quarters)) * 4 + 1)
+)
+
+# Combine final output
+real_gdp_growth <- cbind(year = formatted_years, quarterly_growth)
+
+
+real_gdp_growth <- real_gdp_growth %>%
+  dplyr::filter(!(year %in% c("1997 Q1", "1997 Q2", "1997 Q3", "1997 Q4")))
+
+
+
+#6 #####
+# Read the Excel file
+raw_exp <- read_excel("Russia Expenditure.xlsx")
+
+# Convert the first column (year) to numeric safely
+raw_exp[[1]] <- suppressWarnings(as.numeric(raw_exp[[1]]))
+
+# Drop rows with NA in the year column
+rus_exp <- raw_exp[!is.na(raw_exp[[1]]), ]
+
+# Store the year values
+year_col <- rus_exp[[1]]
+
+# Generate quarterly points (e.g., 1997.00, 1997.25, ..., 2002.75)
+year_quarters <- seq(min(year_col), max(year_col), by = 0.25)
+
+# Function: annual % → index (base 100)
+growth_to_index <- function(growth) {
+  index <- numeric(length(growth))
+  index[1] <- 100
+  for (i in 2:length(growth)) {
+    index[i] <- index[i - 1] * (1 + growth[i - 1] / 100)
+  }
+  return(index)
+}
+
+# Apply to all % growth columns (excluding year)
+index_data <- as.data.frame(
+  lapply(rus_exp[-1], growth_to_index)
+)
+
+# Interpolate index quarterly using spline
+interpolated_index <- as.data.frame(
+  lapply(index_data, function(col) spline(year_col, col, xout = year_quarters, method = "natural")$y)
+)
+
+# Convert interpolated index → quarterly % change
+quarterly_growth <- as.data.frame(
+  lapply(interpolated_index, function(x) c(NA, diff(x) / head(x, -1) * 100))
+)
+
+# Format the year column as "YYYY QX"
+formatted_years <- paste0(
+  floor(year_quarters), " Q", round((year_quarters - floor(year_quarters)) * 4 + 1)
+)
+
+# Combine into final dataset (same object)
+rus_exp <- cbind(year = formatted_years, quarterly_growth)
+
+rus_exp <- rus_exp %>%
+  dplyr::filter(!(year %in% c("1997 Q1", "1997 Q2", "1997 Q3", "1997 Q4")))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#7 #####
+#merging the dataset
+# Start by merging the dependent variable and main independent variable
+master_ds <- merge(rus_gdp_simple, rus_agg_sanctions, by = "year", all = TRUE)
+
+# Merge in control variables one at a time
+master_ds <- merge(master_ds, crude_oil, by = "year", all = TRUE)
+master_ds <- merge(master_ds, rus_exp, by = "year", all = TRUE)
+master_ds <- merge(master_ds, real_gdp_growth, by = "year", all = TRUE)
+
+master_ds$log_gdp <- log(master_ds$`Real GDP (Billion USD)`)
+master_ds$log_WTI <- log(master_ds$WTI_price)
+master_ds$log_Brent <- log(master_ds$Brent_price)
+# Log-transform total intensity score (+1 to avoid log(0))
+master_ds$log_TIS <- log(master_ds$total_intensity_score + 1)
+master_ds <- master_ds %>% 
+  rename(gdp_exp = Government.expenditure....of.GDP.)
+
+
+
+#8 #####
+summary(master_ds)
+describe(master_ds)
+
+summary(rus_gdp_simple)
+describe(rus_gdp_simple)
+
+summary(rus_sanctions)
+describe(rus_sanctions)
+
+summary(rus_agg_sanctions)
+describe(rus_agg_sanctions)
+
+summary(crude_oil)
+describe(crude_oil)
+
+summary(rus_agg_sanctions)
+describe(rus_agg_sanctions)
+
+summary(rus_exp)
+describe(rus_exp)
+
+summary(real_gdp_growth)
+describe(real_gdp_growth)
+
+
+#9 #####
+
+# Filter out invalid year formats
+rus_gdp_simple <- rus_gdp_simple[grepl("^[0-9]{4} Q[1-4]$", rus_gdp_simple$year), ]
+rus_agg_sanctions <- rus_agg_sanctions[grepl("^[0-9]{4} Q[1-4]$", rus_agg_sanctions$year), ]
+
+# Create year_date column with robust quarter-to-date mapping
+rus_gdp_simple$year_date <- as.Date(
+  sprintf(
+    "%s-%02d-01",
+    sub(" Q.*", "", rus_gdp_simple$year),
+    as.numeric(sub(".*Q", "", rus_gdp_simple$year)) * 3 - 2
+  ),
+  format = "%Y-%m-%d"
+)
+
+rus_agg_sanctions$year_date <- as.Date(
+  sprintf(
+    "%s-%02d-01",
+    sub(" Q.*", "", rus_agg_sanctions$year),
+    as.numeric(sub(".*Q", "", rus_agg_sanctions$year)) * 3 - 2
+  ),
+  format = "%Y-%m-%d"
+)
+
+# Check for NA in year_date
+if (any(is.na(rus_gdp_simple$year_date))) {
+  warning("NA values found in rus_gdp_simple$year_date")
+  print(rus_gdp_simple$year[is.na(rus_gdp_simple$year_date)])
+}
+if (any(is.na(rus_agg_sanctions$year_date))) {
+  warning("NA values found in rus_agg_sanctions$year_date")
+  print(rus_agg_sanctions$year[is.na(rus_agg_sanctions$year_date)])
+}
+
+# Create plotting datasets with date-based filtering (start at 2008 Q3)
+rus_gdp_simple_plot <- rus_gdp_simple[rus_gdp_simple$year_date >= as.Date("1998-01-01"), ]
+rus_agg_sanctions_plot <- rus_agg_sanctions[rus_agg_sanctions$year_date >= as.Date("2008-07-01"), ]
+
+# Remove any rows with NA in year_date or y-variable
+rus_gdp_simple_plot <- rus_gdp_simple_plot[!is.na(rus_gdp_simple_plot$year_date) & 
+                                             !is.na(rus_gdp_simple_plot$`Real GDP (Billion USD)`), ]
+rus_agg_sanctions_plot <- rus_agg_sanctions_plot[!is.na(rus_agg_sanctions_plot$year_date) & 
+                                                   !is.na(rus_agg_sanctions_plot$total_intensity_score), ]
+
+
+# Add log-transformed GDP variable
+master_ds$log_gdp <- log(master_ds$`Real GDP (Billion USD)`)
+
+summary(master_ds$log_gdp)
+hist(master_ds$log_gdp, main = "Log of Russia Real GDP", xlab = "log(GDP)", col = "steelblue")
+
+
+
+#10 #####
+# Extract Year and Quarter
+rus_gdp_simple_plot <- rus_gdp_simple_plot %>%
+  mutate(
+    Quarter = paste0("Q", quarter(year_date)),
+    Year = year(year_date)
+  )
+
+# Subset for ticks every quarter
+quarter_ticks <- rus_gdp_simple_plot %>%
+  filter(Quarter %in% c("Q1", "Q2", "Q3", "Q4"))
+
+# Choose x-positions for year labels (centered between Q2 and Q3)
+year_labels_df <- rus_gdp_simple_plot %>%
+  group_by(Year) %>%
+  slice(2) %>%
+  ungroup()
+
+# Get y-range for positioning
+y_min <- min(rus_gdp_simple_plot$`Real GDP (Billion USD)`, na.rm = TRUE)
+y_max <- max(rus_gdp_simple_plot$`Real GDP (Billion USD)`, na.rm = TRUE)
+y_range <- y_max - y_min
+
+# Plot
+ggplot(rus_gdp_simple_plot, aes(x = year_date, y = `Real GDP (Billion USD)`)) +
+  geom_line(color = "steelblue", linewidth = 1.2) +
+  
+  # Custom x-axis: Quarters only
+  scale_x_date(
+    breaks = quarter_ticks$year_date,
+    labels = quarter_ticks$Quarter,
+    expand = c(0.01, 0.01)
+  ) +
+  
+  # Ensure y-axis has enough space
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.05))) +
+  
+  labs(x = "Year", y = "Real GDP (Billion USD)") +
+  
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 7,),  # Ensure quarters are visible
+    axis.ticks.x = element_line(color = "black"),  # Add ticks for clarity
+    plot.margin = margin(t = 10, r = 10, b = 100, l = 10),  # Extra bottom margin
+    panel.grid.minor = element_blank()
+  ) +
+  
+  # Add year labels below quarters
+  annotate(
+    "text",
+    x = year_labels_df$year_date,
+    y = y_min - (0.1 * y_range),  # 10% of y-range below y_min
+    label = year_labels_df$Year,
+    size = 3,
+    vjust = 1.5,  # Push downward
+    color = "black"
+  )
+
+
+
+
+#11 #####
+ggplot(master_ds, aes(x = total_intensity_score)) +
+  geom_density(fill = "tomato", alpha = 0.6) +
+  labs(x = "Intensity Score", y = "Density") +
+  theme_minimal()
+
+
+#12 #####
+
+# Verify rus_sanctions exists
+if (!exists("rus_sanctions")) stop("rus_sanctions dataset not found")
+cat("Rows in rus_sanctions:", nrow(rus_sanctions), "\n")
+
+# Check unique values in sanction type columns to confirm they are binary
+sapply(c("trade", "financial", "military", "arms", "travel"), function(col) {
+  unique_vals <- unique(rus_sanctions[[col]])
+  cat("Unique values in", col, ":", unique_vals, "\n")
+})
+
+# Summarize counts of sanction types for each category (exclude Other sanction type)
+sanction_types_by_category <- rus_sanctions %>%
+  summarise(
+    # Crimea: count non-zero sanctions where is_crimea = 1
+    Crimea_Trade = sum(trade[is_crimea == 1] > 0, na.rm = TRUE),
+    Crimea_Financial = sum(financial[is_crimea == 1] > 0, na.rm = TRUE),
+    Crimea_Military = sum(military[is_crimea == 1] > 0, na.rm = TRUE),
+    Crimea_Arms = sum(arms[is_crimea == 1] > 0, na.rm = TRUE),
+    Crimea_Travel = sum(travel[is_crimea == 1] > 0, na.rm = TRUE),
+    # Invasion: count non-zero sanctions where is_invasion = 1
+    Invasion_Trade = sum(trade[is_invasion == 1] > 0, na.rm = TRUE),
+    Invasion_Financial = sum(financial[is_invasion == 1] > 0, na.rm = TRUE),
+    Invasion_Military = sum(military[is_invasion == 1] > 0, na.rm = TRUE),
+    Invasion_Arms = sum(arms[is_invasion == 1] > 0, na.rm = TRUE),
+    Invasion_Travel = sum(travel[is_invasion == 1] > 0, na.rm = TRUE),
+    # Other: count non-zero sanctions where is_other = 1
+    Other_Trade = sum(trade[is_other == 1] > 0, na.rm = TRUE),
+    Other_Financial = sum(financial[is_other == 1] > 0, na.rm = TRUE),
+    Other_Military = sum(military[is_other == 1] > 0, na.rm = TRUE),
+    Other_Arms = sum(arms[is_other == 1] > 0, na.rm = TRUE),
+    Other_Travel = sum(travel[is_other == 1] > 0, na.rm = TRUE)
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = c("category", "sanction_type"),
+    names_sep = "_",
+    values_to = "count"
+  ) %>%
+  mutate(
+    category = factor(category, levels = c("Crimea", "Invasion", "Other")),
+    sanction_type = factor(
+      sanction_type,
+      levels = c("Trade", "Financial", "Military", "Arms", "Travel")
+    )
+  )
+
+# Check summarized data
+cat("Summarized sanction counts:\n")
+print(sanction_types_by_category)
+cat("Rows in sanction_types_by_category:", nrow(sanction_types_by_category), "\n")
+
+# Create faceted bar plot
+sanction_plot <- ggplot(
+  sanction_types_by_category,
+  aes(x = sanction_type, y = count, fill = sanction_type)
+) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ category, ncol = 3, scales = "free_y") +
+  labs(
+    x = "Sanction Type",
+    y = "Count",
+    fill = "Sanction Type"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(size = 10, face = "bold"),
+    legend.position = "top"
+  ) +
+  scale_fill_brewer(
+    palette = "Set2",
+    labels = c("Trade", "Financial", "Military", "Arms", "Travel")
+  )
+
+# Display plot
+print(sanction_plot)
+
+# Save plot to file
+ggsave("sanction_distribution_plot.png", plot = sanction_plot, width = 10, height = 6)
+cat("Plot saved as sanction_distribution_plot.png\n")
+
+
+
+
+#13 #####
+# Create a function to convert year to quarter (default Q1)
+year_to_quarter <- function(year, quarter = "Q1") {
+  paste(year, quarter)
+}
+
+# Add start quarters based on your information
+rus_sanctions <- rus_sanctions %>%
+  mutate(
+    start_quarter = case_when(
+      sanctioning_state == "Georgia" ~ "2008 Q3",
+      sanctioning_state == "Australia" & begin == 2014 ~ "2014 Q1",
+      sanctioning_state == "Australia" & begin == 2022 ~ "2022 Q1",
+      sanctioning_state == "Canada" & begin == 2014 ~ "2014 Q1",
+      sanctioning_state == "Canada" & begin == 2022 ~ "2022 Q1",
+      sanctioning_state == "EU" ~ "2014 Q1",
+      sanctioning_state == "EU, Montenegro, Iceland, Albania, Liechtenstein, Norway, Ukraine" ~ "2014 Q1",
+      sanctioning_state == "Japan" & begin == 2014 ~ "2014 Q1",
+      sanctioning_state == "Japan" & begin == 2022 ~ "2022 Q1",
+      sanctioning_state == "New Zealand" & begin == 2014 ~ "2014 Q1",
+      sanctioning_state == "New Zealand" & begin == 2022 ~ "2022 Q1",
+      sanctioning_state == "Switzerland" & begin == 2014 ~ "2014 Q1",
+      sanctioning_state == "Switzerland" & begin == 2022 ~ "2022 Q1",
+      sanctioning_state == "United Kingdom" & begin == 2014 ~ "2014 Q1",
+      sanctioning_state == "United Kingdom" & begin == 2021 ~ "2021 Q2",
+      sanctioning_state == "United Kingdom" & begin == 2022 ~ "2022 Q1",
+      sanctioning_state == "United States" & begin == 2014 ~ "2014 Q1",
+      sanctioning_state == "United States" & begin == 2017 ~ "2017 Q3",
+      sanctioning_state == "United States" & begin == 2020 ~ "2020 Q3",
+      sanctioning_state == "United States" & begin == 2022 ~ "2022 Q1",
+      sanctioning_state == "EU, Macedonia, Albania, Kosovo" ~ "2022 Q1",
+      sanctioning_state == "G7, EU" ~ "2022 Q1",
+      sanctioning_state == "Germany" & begin == 2022 ~ "2022 Q1",
+      sanctioning_state == "Iceland" ~ "2022 Q1",
+      sanctioning_state == "Korea, South" ~ "2022 Q1",
+      sanctioning_state == "Liechtenstein" ~ "2022 Q1",
+      sanctioning_state == "Monaco" ~ "2022 Q1",
+      sanctioning_state == "Norway" ~ "2022 Q1",
+      sanctioning_state == "Poland" ~ "2022 Q1",
+      sanctioning_state == "Singapore" ~ "2022 Q1",
+      sanctioning_state == "Taiwan" ~ "2022 Q1",
+      sanctioning_state == "United States, EU, United Kingdom, Canada, France, Germany, Italy, Japan" ~ "2022 Q1",
+      sanctioning_state == "United States, United Kingdom, Canada" ~ "2022 Q1",
+      sanctioning_state == "United States, United Kingdom, Japan, Canada" ~ "2022 Q1",
+      sanctioning_state == "Czech Republic" ~ "2023 Q1",
+      sanctioning_state == "Kazakhstan" ~ "2023 Q1",
+      sanctioning_state == "Latvia, Lithuania, Estonia" ~ "2023 Q1",
+      sanctioning_state == "Ukraine" & begin == 2023 ~ "2023 Q1",
+      sanctioning_state == "United States, United Kingdom" ~ "2023 Q1",
+      TRUE ~ paste0(begin, " Q1") # Default to Q1 if no specific info
+    ),
+    
+    # Add end quarters (most are ongoing)
+    end_quarter = case_when(
+      sanctioning_state == "Georgia" ~ "2011 Q2", # Only Georgia has ended
+      end == 2023 ~ "2023 Q4", # Assuming current sanctions end at 2023 Q4
+      TRUE ~ NA_character_ # Ongoing sanctions have no end quarter
+    )
+  )
+
+# Create a binary indicator for each quarter (2008 Q1 - 2024 Q4)
+quarters <- expand.grid(
+  year = 2008:2024,  # Adjusted to 2008 to match the chart
+  quarter = paste0("Q", 1:4)
+) %>%
+  mutate(
+    quarter_label = paste(year, quarter),
+    date = as.Date(paste(
+      year, 
+      case_when(
+        quarter == "Q1" ~ "01-01",
+        quarter == "Q2" ~ "04-01",
+        quarter == "Q3" ~ "07-01",
+        quarter == "Q4" ~ "10-01"
+      ), 
+      sep = "-"
+    ), format = "%Y-%m-%d")
+  ) %>%
+  arrange(date)
+
+# Function to check if a sanction was active in a given quarter
+is_active <- function(start_q, end_q, current_q, quarters_df) {
+  start_idx <- which(quarters_df$quarter_label == start_q)
+  current_idx <- which(quarters_df$quarter_label == current_q)
+  
+  if (is.na(end_q)) {
+    # Ongoing sanction - active from start quarter onward
+    current_idx >= start_idx
+  } else {
+    end_idx <- which(quarters_df$quarter_label == end_q)
+    current_idx >= start_idx & current_idx <= end_idx
+  }
+}
+
+# Create a panel dataset with binary indicators
+rus_sanctions <- rus_sanctions %>%
+  rowwise() %>%
+  do({
+    tibble(
+      sanction_id = .$sanctioning_state,
+      start_quarter = .$start_quarter,
+      end_quarter = .$end_quarter,
+      quarter = quarters$quarter_label,
+      date = quarters$date,
+      active = mapply(is_active, 
+                      .$start_quarter, 
+                      .$end_quarter, 
+                      quarters$quarter_label, 
+                      MoreArgs = list(quarters_df = quarters)),
+      # Carry forward all other sanction attributes
+      descr_trade = .$descr_trade,
+      trade = .$trade,
+      arms = .$arms,
+      military = .$military,
+      financial = .$financial,
+      travel = .$travel,
+      other = .$other,
+      sanction_intensity = .$sanction_intensity,
+      sender_mult = .$sender_mult,
+      objective = .$objective,
+      sanction_category = .$sanction_category,
+      is_crimea = .$is_crimea,
+      is_invasion = .$is_invasion,
+      is_other = .$is_other
+    )
+  }) %>%
+  ungroup()
+
+# Rename quarter to year
+colnames(rus_sanctions)[colnames(rus_sanctions) == "quarter"] <- "year"
+
+# Only active sanctions
+rus_sanctions <- rus_sanctions %>%
+  filter(active == TRUE)
+
+# Drop irrelevant columns
+cols_to_drop <- c("date", "active")  
+rus_sanctions <- rus_sanctions %>%
+  dplyr::select(-all_of(cols_to_drop))
+
+# Reorder columns
+rus_sanctions <- rus_sanctions %>%
+  relocate(year, .before = start_quarter)
+
+# Summarize to count the number of sanctions per quarter and category
+rus_sanctions_count <- rus_sanctions %>%
+  group_by(year, sanction_category) %>%
+  summarise(number = n(), .groups = "drop") %>%
+  # Pivot to have a column for each sanction category
+  pivot_wider(
+    names_from = sanction_category,
+    values_from = number,
+    names_prefix = "num_",
+    values_fill = 0
+  ) %>%
+  # Join with quarters to ensure all quarters are included
+  right_join(quarters %>% dplyr::select(quarter_label), by = c("year" = "quarter_label")) %>%
+  # Fill in missing values with 0
+  mutate(
+    num_crimea = replace_na(num_crimea, 0),
+    num_invasion = replace_na(num_invasion, 0),
+    num_other = replace_na(num_other, 0)
+  ) %>%
+  # Add a total count column
+  mutate(
+    total_sanctions = num_crimea + num_invasion + num_other
+  ) %>%
+  arrange(year)  # No need to rename since 'year' is already the column name
+
+# Reshape for plotting
+rus_sanctions_count_long <- rus_sanctions_count %>%
+  pivot_longer(
+    cols = c(num_crimea, num_invasion, num_other),
+    names_to = "sanction_category",
+    values_to = "number",
+    names_prefix = "num_",
+    names_transform = list(sanction_category = ~gsub("_intensity", "", .))
+  )
+
+# Plot the summarized data
+ggplot(rus_sanctions_count_long, aes(x = year, y = number, fill = sanction_category)) +
+  geom_col() +
+  scale_fill_manual(values = c("crimea" = "maroon", "invasion" = "#4682B4", "other" = "#355E3B"),
+                    labels = c("Crimea", "Invasion", "Other")) +
+  labs(x = "Quarter", y = "Number of Sanctions", fill = "Sanction Category") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+
+
+
+
+
+
+
+#14 ####
+# Convert master_ds to time series object
+ts_master <- ts(master_ds, start = c(1998, 1), frequency = 4)
+
+# === ADF Test ===
+adf.test(na.omit(master_ds$log_gdp))
+adf.test(na.omit(master_ds$log_TIS))
+adf.test(na.omit(master_ds$log_Brent))
+adf.test(na.omit(master_ds$`gdp_exp`))
+adf.test(na.omit(master_ds$World))
+#difference the model 
+adf.test(diff(na.omit(master_ds$log_gdp)), k = 4)
+adf.test(diff(na.omit(master_ds$log_TIS)), k = 4)
+adf.test(diff(na.omit(master_ds$log_Brent)), k = 4)
+
+
+# Collect ADF test statistics
+adf_results <- data.frame(
+  Variable = c("log_gdp", "log_TIS", "log_Brent", 
+               "Gov.Exp", "World",
+               "D.log_gdp", "D.log_TIS", "D.log_Brent"),
+  Statistic = c(
+    adf.test(na.omit(master_ds$log_gdp))$statistic,
+    adf.test(na.omit(master_ds$log_TIS))$statistic,
+    adf.test(na.omit(master_ds$log_Brent))$statistic,
+    adf.test(na.omit(master_ds$`gdp_exp`))$statistic,
+    adf.test(na.omit(master_ds$World))$statistic,
+    adf.test(diff(na.omit(master_ds$log_gdp)), k = 4)$statistic,
+    adf.test(diff(na.omit(master_ds$log_TIS)), k = 4)$statistic,
+    adf.test(diff(na.omit(master_ds$log_Brent)), k = 4)$statistic
+  ),
+  P_value = c(
+    adf.test(na.omit(master_ds$log_gdp))$p.value,
+    adf.test(na.omit(master_ds$log_TIS))$p.value,
+    adf.test(na.omit(master_ds$log_Brent))$p.value,
+    adf.test(na.omit(master_ds$`gdp_exp`))$p.value,
+    adf.test(na.omit(master_ds$World))$p.value,
+    adf.test(diff(na.omit(master_ds$log_gdp)), k = 4)$p.value,
+    adf.test(diff(na.omit(master_ds$log_TIS)), k = 4)$p.value,
+    adf.test(diff(na.omit(master_ds$log_Brent)), k = 4)$p.value
+  )
+)
+
+stargazer(adf_results, type = "text", summary = FALSE,
+          title = "ADF Unit Root Test Results",
+          out = "/Users/tescocharlie/Desktop/Dissertation/adf_test_results.txt")
+
+# Granger causality test (example: sanctions → GDP)
+grangertest(log_gdp ~ log_TIS, order = 2, data = master_ds)
+
+stargazer(grangertest(log_gdp ~ log_TIS, order = 2, data = master_ds), type = "text", summary = FALSE,
+          title = "Granger Test Results",
+          out = "/Users/tescocharlie/Desktop/Dissertation/granger_test_results.txt")
+
+
+# === ARDL Model ===
+model_ardl <- dynlm(
+  log_gdp ~ L(log_gdp, 1:2) +            # Added 2 lags for log_gdp
+    L(log_TIS, 0:3) +                    # Increased lags for log_TIS to 3
+    L(log_Brent, 0:2) +                  # Increased lags for log_Brent to 2
+    L(gdp_exp, 0:2) +                    # Increased lags for gdp_exp to 2
+    L(World, 0:2),                       # Increased lags for World to 2
+  data = ts_master
+)
+
+summary(model_ardl)
+coeftest(model_ardl, vcov = vcovHAC(model_ardl))
+BIC(model_ardl)
+
+stargazer(model_ardl, type = "text", summary = FALSE,
+          title = "ARDL Results",
+          out = "/Users/tescocharlie/Desktop/Dissertation/ARDL_results.html")
+
+# === Fit models with fewer lags for comparison ===
+model_lag1 <- dynlm(
+  log_gdp ~ L(log_gdp, 1) +
+    L(log_TIS, 0:1) +
+    L(log_Brent, 0:1) +
+    L(gdp_exp, 0:1) +
+    L(World, 0:1),
+  data = ts_master
+)
+
+model_lag2 <- update(model_lag1, . ~ . + L(log_TIS, 2))
+
+summary(model_lag1)
+BIC(model_lag1)
+summary(model_lag2)
+BIC(model_lag2)
+
+
+
+
+# === Long-run elasticity of sanctions ===
+# Extract all sanction coefficients
+logtis_coefs <- coef(model_ardl)[grepl("log_TIS", names(coef(model_ardl)))]
+# Use the first lag of GDP in the denominator
+lagged_gdp_coef <- coef(model_ardl)["L(log_gdp, 1:2)1"]
+# Calculate long-run elasticity
+long_run_elasticity <- sum(logtis_coefs, na.rm = TRUE) / (1 - lagged_gdp_coef)
+# Display result
+cat("Long-run elasticity of log_TIS on log_GDP:", round(long_run_elasticity, 4), "\n")
+
+
+# === Autocorrelation ===
+dwtest(model_ardl)
+
+# === Heteroskedasticity ===
+bptest(model_ardl)
+
+# === Multicollinearity (VIF) ===
+vif_data <- na.omit(master_ds[, c(
+  "log_gdp", "log_TIS",
+  "log_Brent", "gdp_exp",
+  "World"
+)])
+vif_model <- lm(log_gdp ~ ., data = vif_data)
+vif_values <- vif(vif_model)
+
+
+# Turn VIF values into a data frame
+vif_table <- data.frame(
+  Variable = names(vif_values),
+  VIF = round(vif_values, 2)
+)
+
+# Print it nicely
+kable(vif_table, caption = "Table: Variance Inflation Factors (VIFs)")
+
+
+
+#15 ####
+# === Residuals ===
+resids <- residuals(model_ardl)
+resids_clean <- ts(na.omit(as.numeric(resids)), frequency = 4, start = c(2000, 1))
+# Residual plot
+plot(resids, main = "Residuals from ARDL Model", ylab = "Residuals", col = "darkred", type = "l")
+abline(h = 0, lty = 2)
+# Extract and clean residuals from the model
+resids <- residuals(model_ardl)
+# Drop NAs explicitly
+resids_clean <- ts(na.omit(as.numeric(resids)), frequency = 4, start = c(1998 + 2, 1))  # Adjust start if needed
+# Plot ACF and PACF
+acf(resids_clean, main = "ACF of ARDL Residuals")
+pacf(resids_clean, main = "PACF of ARDL Residuals")
+
+# === Confidence Intervals ===
+tidy_model <- tidy(model_ardl, conf.int = TRUE)
+
+ggplot(tidy_model, aes(x = reorder(term, estimate), y = estimate)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "ARDL Coefficients with 95% Confidence Intervals", x = "Lagged Terms", y = "Estimate")
+
+
+
+#16 ####
+# === Actual vs Fitted GDP (with Shaded Sanctions) ===
+# Time series setup
+log_gdp_full <- ts_master[, "log_gdp"]
+full_time <- time(log_gdp_full)
+# Fitted values and time
+fitted_vals <- fitted(model_ardl)
+fitted_time <- time(fitted_vals)
+# Actual values used in model
+actual_fit <- model_ardl$model$log_gdp
+# Convert to dates
+plot_df <- data.frame(
+  time = as.Date(as.yearqtr(full_time)),
+  Actual = as.numeric(log_gdp_full)
+)
+
+fitted_df <- data.frame(
+  time = as.Date(as.yearqtr(fitted_time)),
+  Fitted = as.numeric(fitted_vals)
+)
+
+
+# Define sanction regions manually (approximate)
+# Define sanction regions manually (with transparency intensity)
+sanctions_df <- data.frame(
+  category = c("Other", "Other", "Other", "Other", "Crimea", "Invasion"),  # Invasion last
+  label = c("Other", "Other", "Other", "Other", "Crimea", "Invasion"),
+  start = as.Date(c("2020-07-01", "2008-07-01", "2017-07-01", "2021-01-01", "2014-01-01", "2022-01-01")),
+  end   = as.Date(c("2024-12-31", "2011-04-01", "2024-12-31", "2024-12-31", "2024-12-31", "2024-12-31")),
+  alpha = c(0.1, 0.1, 0.1, 0.1, 0.2, 0.2)
+)
+
+scale_fill_manual(values = c(
+  "Crimea" = "firebrick",
+  "Invasion" = "steelblue",
+  "Other" = "darkgreen"
+),
+labels = c(
+  "Crimea Sanctions",
+  "Invasion Sanctions",
+  "Other Sanctions"
+)
+)
+
+# Define date limits
+start_date <- as.Date("1998-01-01")
+end_date <- as.Date("2024-12-31")
+# Filter actual and fitted GDP data to desired range
+plot_df <- plot_df %>%
+  filter(time >= start_date & time <= end_date)
+fitted_df <- fitted_df %>%
+  filter(time >= start_date & time <= end_date)
+# Filter sanctions shading data
+sanctions_df <- sanctions_df %>%
+  filter(end >= start_date & start <= end_date)
+# Plot
+ggplot() +
+  # Sanctions shaded areas
+  geom_rect(data = sanctions_df,
+            aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf, fill = category),
+            alpha = c(0.1, 0.1, 0.1, 0.1, 0.3, 0.2),
+            inherit.aes = FALSE) +
+  # Actual and Fitted log GDP lines with mapped colors
+  geom_line(data = plot_df, aes(x = time, y = Actual, color = "Actual GDP"), size = 1) +
+  geom_line(data = fitted_df, aes(x = time, y = Fitted, color = "Fitted GDP"), size = 1) +
+  # Titles and axis labels
+  labs(
+    title = "Russia: Log Real GDP with Sanctions Shaded",
+    subtitle = "Fitted values from ARDL model; Sanctions shaded by type",
+    x = "Quarter",
+    y = "Log GDP",
+    fill = "Sanctions Type",
+    color = "GDP Lines"
+  ) +
+  # Manual fill colors for sanctions
+  scale_fill_manual(
+    values = c(
+      "Crimea" = "firebrick",
+      "Invasion" = "darkblue",
+      "Other" = "forestgreen"
+    ),
+    labels = c(
+      "Crimea Sanctions",
+      "Invasion Sanctions",
+      "Other Sanctions"
+    )
+  ) +
+  # Manual line colors for GDP lines
+  scale_color_manual(
+    values = c(
+      "Actual GDP" = "black",
+      "Fitted GDP" = "magenta"
+    )
+  ) +
+  # Quarterly x-axis formatting and limiting display range
+  scale_x_date(
+    limits = c(start_date, end_date),
+    date_breaks = "3 months",
+    labels = function(x) {
+      paste0(format(x, "%Y"), " Q", (as.numeric(format(x, "%m")) - 1) %/% 3 + 1)
+    },
+    expand = c(0, 0)
+  ) +
+  # Theme and layout
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 0.5, size = 7),
+    axis.ticks.x = element_line(color = "black"),
+    legend.position = "right",
+    legend.box = "vertical",
+    legend.title = element_text(face = "bold", size = 10),
+    legend.text = element_text(size = 9),
+    legend.key.size = unit(0.8, "lines"),
+    legend.spacing.y = unit(0.2, "cm")
+  ) +
+  
+  # Legends for shaded areas and lines
+  guides(
+    fill = guide_legend(override.aes = list(alpha = 0.3)),
+    color = guide_legend(override.aes = list(linetype = c("solid", "solid")))
+  )
+
+
+#17 ####
+# === Intensity Shading Plot ===
+intensity_df <- data.frame(
+  time = as.Date(as.yearqtr(time(ts_master))),
+  intensity = as.numeric(ts_master[, "total_intensity_score"])
+)
+ggplot() +
+  # Intensity shading layer
+  geom_tile(data = intensity_df,
+            aes(x = time, y = 4.5, fill = intensity),
+            height = Inf,
+            alpha = 0.5) +
+  # Actual GDP line
+  geom_line(data = plot_df, aes(x = time, y = Actual), color = "black", size = 1) +
+  # Fitted GDP line
+  geom_line(data = fitted_df, aes(x = time, y = Fitted), color = "magenta", size = 1) +
+  # Axis labels and title
+  labs(
+    title = "Russia: Log Real GDP with Sanction Intensity Shading",
+    subtitle = "Higher sanction intensity = deeper shading",
+    x = "Quarter",
+    y = "Log of Real GDP",
+    fill = "Sanction\nIntensity"
+  ) +
+  
+  # Gradient fill for intensity
+  scale_fill_gradientn(
+    colours = c("#EBD379", "#EB7900", "#EA4600", "#de2d26", "#a50f15"),
+    values = rescale(c(1, 65, 88, 221, 238)),
+    limits = c(1, 238),
+    name = "Sanction\nIntensity",
+    na.value = NA
+  )+
+  # Quarterly x-axis formatting
+  scale_x_date(
+    limits = c(as.Date("1998-01-01"), as.Date("2024-12-31")),
+    date_breaks = "3 months",
+    labels = function(x) {
+      paste0(format(x, "%Y"), " Q", (as.numeric(format(x, "%m")) - 1) %/% 3 + 1)
+    },
+    expand = c(0, 0)
+  ) +
+  # Theme and layout
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 0.5, size = 7),
+    axis.ticks.x = element_line(color = "black"),
+    legend.position = "right",
+    legend.box = "vertical",
+    legend.title = element_text(face = "bold", size = 10),
+    legend.text = element_text(size = 9),
+    legend.key.size = unit(0.8, "lines"),
+    legend.spacing.y = unit(0.2, "cm")
+  ) +
+  # Legends for shaded areas and lines
+  guides(
+    fill = guide_legend(override.aes = list(alpha = 0.3)),
+    color = guide_legend(override.aes = list(linetype = c("solid", "solid")))
+  )
+
+
+
+
+
+
+#18 ####
+# === Robustness Check: VAR ===
+# Subset for VAR (remove log_gdp to avoid redundancy)
+var_data <- na.omit(master_ds[, c("log_gdp", "log_TIS", "log_Brent", "gdp_exp", "World")])
+# Convert to ts object
+var_ts <- ts(var_data, start = c(1998, 1), frequency = 4)
+# Lag selection
+lag_select <- VARselect(var_ts, lag.max = 6, type = "const")
+cat("\n--- Optimal Lags by Criteria ---\n")
+print(lag_select$selection)
+# Fit VAR model
+var_model <- VAR(var_ts, p = lag_select$selection[1], type = "const")
+summary(var_model)
+
+# Export stargazer output to a text file
+stargazer(var_model$varresult,
+          type = "html",                       # or use "latex" for .tex file
+          out = "/Users/tescocharlie/Desktop/Dissertation/VAR_results.html",
+          title = "Vector Autoregression (VAR) Model Results",
+          dep.var.labels.include = TRUE)
+
+
+
+
+# === Impulse Response (Sanctions → GDP) ===
+irf_res <- irf(var_model, impulse = "log_TIS", response = "log_gdp", n.ahead = 12, boot = TRUE)
+# Plot IRF
+plot(irf_res, main = "Impulse Response: Sanctions → Log GDP")
+
+
+
+
+
+#19 ####
+# === GDP Forecast from ARDL ===
+# Assume forecast_ardl is a numeric vector with your forecasts
+forecast_ardl <- predict(model_ardl, n.ahead = 8)
+
+# Create the forecast time series object
+forecast_ts <- ts(forecast_ardl, start = c(2023, 1), frequency = 4)
+
+# Create a data frame for plotting
+forecast_df <- data.frame(
+  Quarter = as.yearqtr(time(forecast_ts)),  # Converts time to year-quarter format
+  Forecast = as.numeric(forecast_ts)
+)
+
+# Plot forecast
+ggplot(forecast_df, aes(x = Quarter, y = Forecast)) +
+  geom_line(color = "blue", size = 1.2) +  # Thicker line for clarity
+  geom_point(color = "blue", size = 2) +   # Points on forecast
+  labs(
+    title = "ARDL Forecast: Log Real GDP",
+    x = "Quarter",
+    y = "Log of Real GDP"
+  ) +
+  scale_x_yearqtr(
+    format = "%Y Q%q",    # Show quarter format
+    breaks = forecast_df$Quarter  # Place a label at every forecasted quarter
+  ) +
+  theme_minimal(base_size = 14) +           # Clean white background
+  theme(
+    panel.grid.major = element_line(color = "lightgrey"),
+    panel.grid.minor = element_blank(),
+    plot.background = element_rect(fill = "white", color = NA),  # White background
+    panel.background = element_rect(fill = "white", color = NA),
+    axis.text.x = element_text(angle = 45, hjust = 1)             # Rotate x-axis labels for clarity
+  )
+
+#20 ####
+# === Close Log File ===
+cat("===== Script ended at", format(Sys.time()), "=====\n")
+sink(type = "message")
+sink()
+
+===== Script started at 2025-05-05 20:47:01 =====
+Error in install.packages : Updating loaded packages
+-/                                                                                                     /                                                                                                     -                                                                                                     -/                                                                                                     /                                                                                                     -                                                                                                     -/                                                                                                     /                                                                                                     -                                                                                                     -/                                                                                                     /                                                                                                     -                                                                                                     -/                                                                                                     /                                                                                                     -                                                                                                          year           Real GDP (Billion USD) total_other_intensity total_crimea_intensity
+ Length:109         Min.   : 22.56         Min.   : 0.000        Min.   : 0            
+ Class :character   1st Qu.:132.33         1st Qu.: 0.000        1st Qu.:65            
+ Mode  :character   Median :340.59         Median : 3.500        Median :65            
+                    Mean   :297.76         Mean   : 7.173        Mean   :50            
+                    3rd Qu.:420.28         3rd Qu.:12.000        3rd Qu.:65            
+                    Max.   :638.94         Max.   :23.000        Max.   :65            
+                    NA's   :2              NA's   :57            NA's   :57            
+ total_invasion_intensity total_intensity_score   WTI_price       Brent_price        gdp_exp     
+ Min.   :  0.00           Min.   :  1.00        Min.   : 12.94   Min.   : 11.19   Min.   :3.449  
+ 1st Qu.:  0.00           1st Qu.: 65.00        1st Qu.: 38.35   1st Qu.: 35.45   1st Qu.:7.104  
+ Median :  0.00           Median : 68.00        Median : 59.44   Median : 61.75   Median :7.585  
+ Mean   : 21.77           Mean   : 78.94        Mean   : 60.29   Mean   : 63.00   Mean   :7.530  
+ 3rd Qu.:  0.00           3rd Qu.: 77.00        3rd Qu.: 78.41   3rd Qu.: 83.00   3rd Qu.:7.839  
+ Max.   :150.00           Max.   :238.00        Max.   :123.95   Max.   :121.40   Max.   :9.712  
+ NA's   :57               NA's   :57                                              NA's   :8      
+ Eastern.Europe        Europe        Emerging.and.Developing.Europe
+ Min.   :-1.9612   Min.   :-1.8104   Min.   :-1.8223               
+ 1st Qu.: 0.2774   1st Qu.: 0.3261   1st Qu.: 0.3504               
+ Median : 0.8443   Median : 0.5507   Median : 0.9016               
+ Mean   : 0.7406   Mean   : 0.4792   Mean   : 0.8434               
+ 3rd Qu.: 1.4084   3rd Qu.: 0.8368   3rd Qu.: 1.5392               
+ Max.   : 1.9666   Max.   : 2.0666   Max.   : 2.0588               
+ NA's   :4         NA's   :4         NA's   :4                     
+ Emerging.market.and.developing.economies     World            log_gdp         log_WTI     
+ Min.   :-0.7882                          Min.   :-1.0308   Min.   :3.116   Min.   :2.560  
+ 1st Qu.: 0.9839                          1st Qu.: 0.7711   1st Qu.:4.885   1st Qu.:3.647  
+ Median : 1.1874                          Median : 0.8605   Median :5.831   Median :4.085  
+ Mean   : 1.2008                          Mean   : 0.8553   Mean   :5.439   Mean   :3.975  
+ 3rd Qu.: 1.5405                          3rd Qu.: 1.1247   3rd Qu.:6.041   3rd Qu.:4.362  
+ Max.   : 2.0610                          Max.   : 1.9914   Max.   :6.460   Max.   :4.820  
+ NA's   :4                                NA's   :4         NA's   :2                      
+   log_Brent        log_TIS      
+ Min.   :2.415   Min.   :0.6932  
+ 1st Qu.:3.568   1st Qu.:4.1897  
+ Median :4.123   Median :4.2332  
+ Mean   :3.995   Mean   :3.6220  
+ 3rd Qu.:4.419   3rd Qu.:4.3567  
+ Max.   :4.799   Max.   :5.4765  
+                 NA's   :57      
+                                         vars   n   mean     sd median trimmed    mad   min    max
+year*                                       1 109  55.00  31.61  55.00   55.00  40.03  1.00 109.00
+Real GDP (Billion USD)                      2 107 297.76 164.02 340.59  298.64 167.04 22.56 638.94
+total_other_intensity                       3  52   7.17   8.88   3.50    6.14   5.19  0.00  23.00
+total_crimea_intensity                      4  52  50.00  27.65  65.00   54.17   0.00  0.00  65.00
+total_invasion_intensity                    5  52  21.77  51.66   0.00    9.50   0.00  0.00 150.00
+total_intensity_score                       6  52  78.94  71.20  68.00   69.69   8.90  1.00 238.00
+WTI_price                                   7 109  60.29  26.97  59.44   59.95  28.47 12.94 123.95
+Brent_price                                 8 109  63.00  30.45  61.75   62.51  32.57 11.19 121.40
+gdp_exp                                     9 101   7.53   0.75   7.58    7.52   0.58  3.45   9.71
+Eastern.Europe                             10 105   0.74   0.86   0.84    0.82   0.84 -1.96   1.97
+Europe                                     11 105   0.48   0.65   0.55    0.56   0.36 -1.81   2.07
+Emerging.and.Developing.Europe             12 105   0.84   0.83   0.90    0.92   0.91 -1.82   2.06
+Emerging.market.and.developing.economies   13 105   1.20   0.52   1.19    1.24   0.37 -0.79   2.06
+World                                      14 105   0.86   0.47   0.86    0.91   0.26 -1.03   1.99
+log_gdp                                    15 107   5.44   0.84   5.83    5.55   0.50  3.12   6.46
+log_WTI                                    16 109   3.98   0.54   4.08    4.03   0.49  2.56   4.82
+log_Brent                                  17 109   3.99   0.59   4.12    4.05   0.50  2.41   4.80
+log_TIS                                    18  52   3.62   1.67   4.23    3.75   0.12  0.69   5.48
+                                          range  skew kurtosis    se
+year*                                    108.00  0.00    -1.23  3.03
+Real GDP (Billion USD)                   616.39 -0.20    -1.15 15.86
+total_other_intensity                     23.00  0.99    -0.69  1.23
+total_crimea_intensity                    65.00 -1.24    -0.47  3.83
+total_invasion_intensity                 150.00  1.88     1.60  7.16
+total_intensity_score                    237.00  1.16     0.47  9.87
+WTI_price                                111.02  0.11    -0.92  2.58
+Brent_price                              110.21  0.15    -1.02  2.92
+gdp_exp                                    6.26 -1.11     7.60  0.07
+Eastern.Europe                             3.93 -0.80     0.45  0.08
+Europe                                     3.88 -1.38     3.15  0.06
+Emerging.and.Developing.Europe             3.88 -0.83     0.72  0.08
+Emerging.market.and.developing.economies   2.85 -1.05     2.46  0.05
+World                                      3.02 -1.44     3.94  0.05
+log_gdp                                    3.34 -1.06    -0.06  0.08
+log_WTI                                    2.26 -0.77    -0.16  0.05
+log_Brent                                  2.38 -0.79    -0.13  0.06
+log_TIS                                    4.78 -1.00    -0.61  0.23
+     year           Real GDP (Billion USD)
+ Length:108         Min.   : 22.56        
+ Class :character   1st Qu.:132.33        
+ Mode  :character   Median :340.59        
+                    Mean   :297.76        
+                    3rd Qu.:420.28        
+                    Max.   :638.94        
+                    NA's   :1             
+                       vars   n   mean     sd median trimmed    mad   min    max  range skew kurtosis
+year*                     1 108  54.50  31.32  54.50   54.50  40.03  1.00 108.00 107.00  0.0    -1.23
+Real GDP (Billion USD)    2 107 297.76 164.02 340.59  298.64 167.04 22.56 638.94 616.39 -0.2    -1.15
+                          se
+year*                   3.01
+Real GDP (Billion USD) 15.86
+ sanctioning_state      begin           end       descr_trade            trade             arms       
+ Length:39          Min.   :2008   Min.   :2011   Length:39          Min.   :0.0000   Min.   :0.0000  
+ Class :character   1st Qu.:2018   1st Qu.:2023   Class :character   1st Qu.:1.0000   1st Qu.:0.0000  
+ Mode  :character   Median :2022   Median :2023   Mode  :character   Median :1.0000   Median :0.0000  
+                    Mean   :2020   Mean   :2023                      Mean   :0.7692   Mean   :0.1282  
+                    3rd Qu.:2022   3rd Qu.:2023                      3rd Qu.:1.0000   3rd Qu.:0.0000  
+                    Max.   :2023   Max.   :2023                      Max.   :1.0000   Max.   :1.0000  
+    military        financial          travel           other        sanction_intensity
+ Min.   :0.0000   Min.   :0.0000   Min.   :0.0000   Min.   :0.0000   Min.   : 1.000    
+ 1st Qu.:0.0000   1st Qu.:1.0000   1st Qu.:0.0000   1st Qu.:0.0000   1st Qu.: 3.500    
+ Median :0.0000   Median :1.0000   Median :0.0000   Median :0.0000   Median : 6.000    
+ Mean   :0.1538   Mean   :0.8205   Mean   :0.4872   Mean   :0.3077   Mean   : 6.128    
+ 3rd Qu.:0.0000   3rd Qu.:1.0000   3rd Qu.:1.0000   3rd Qu.:1.0000   3rd Qu.: 8.000    
+ Max.   :1.0000   Max.   :1.0000   Max.   :1.0000   Max.   :1.0000   Max.   :11.000    
+  sender_mult      objective         sanction_category    is_crimea       is_invasion    
+ Min.   :0.0000   Length:39          Length:39          Min.   :0.0000   Min.   :0.0000  
+ 1st Qu.:0.0000   Class :character   Class :character   1st Qu.:0.0000   1st Qu.:0.0000  
+ Median :0.0000   Mode  :character   Mode  :character   Median :0.0000   Median :1.0000  
+ Mean   :0.2308                                         Mean   :0.2051   Mean   :0.6923  
+ 3rd Qu.:0.0000                                         3rd Qu.:0.0000   3rd Qu.:1.0000  
+ Max.   :1.0000                                         Max.   :1.0000   Max.   :1.0000  
+    is_other     
+ Min.   :0.0000  
+ 1st Qu.:0.0000  
+ Median :0.0000  
+ Mean   :0.1026  
+ 3rd Qu.:0.0000  
+ Max.   :1.0000  
+                   vars  n    mean   sd median trimmed   mad  min  max range  skew kurtosis   se
+sanctioning_state*    1 39   15.67 8.76     17   15.85 11.86    1   29    28 -0.22    -1.35 1.40
+begin                 2 39 2019.92 3.89   2022 2020.36  0.00 2008 2023    15 -1.32     0.47 0.62
+end                   3 39 2022.69 1.92   2023 2023.00  0.00 2011 2023    12 -5.77    32.15 0.31
+descr_trade*          4 39    2.97 1.42      4    2.97  1.48    1    5     4 -0.22    -1.56 0.23
+trade                 5 39    0.77 0.43      1    0.82  0.00    0    1     1 -1.23    -0.50 0.07
+arms                  6 39    0.13 0.34      0    0.06  0.00    0    1     1  2.14     2.65 0.05
+military              7 39    0.15 0.37      0    0.09  0.00    0    1     1  1.85     1.44 0.06
+financial             8 39    0.82 0.39      1    0.88  0.00    0    1     1 -1.61     0.60 0.06
+travel                9 39    0.49 0.51      0    0.48  0.00    0    1     1  0.05    -2.05 0.08
+other                10 39    0.31 0.47      0    0.27  0.00    0    1     1  0.80    -1.39 0.07
+sanction_intensity   11 39    6.13 2.63      6    6.12  2.97    1   11    10 -0.14    -0.88 0.42
+sender_mult          12 39    0.23 0.43      0    0.18  0.00    0    1     1  1.23    -0.50 0.07
+objective*           13 39    2.87 2.17      2    2.64  1.48    1    8     7  0.69    -0.85 0.35
+sanction_category*   14 39    1.90 0.55      2    1.88  0.00    1    3     2 -0.06     0.06 0.09
+is_crimea            15 39    0.21 0.41      0    0.15  0.00    0    1     1  1.40    -0.03 0.07
+is_invasion          16 39    0.69 0.47      1    0.73  0.00    0    1     1 -0.80    -1.39 0.07
+is_other             17 39    0.10 0.31      0    0.03  0.00    0    1     1  2.52     4.47 0.05
+     year           total_other_intensity total_crimea_intensity total_invasion_intensity
+ Length:52          Min.   : 0.000        Min.   : 0             Min.   :  0.00          
+ Class :character   1st Qu.: 0.000        1st Qu.:65             1st Qu.:  0.00          
+ Mode  :character   Median : 3.500        Median :65             Median :  0.00          
+                    Mean   : 7.173        Mean   :50             Mean   : 21.77          
+                    3rd Qu.:12.000        3rd Qu.:65             3rd Qu.:  0.00          
+                    Max.   :23.000        Max.   :65             Max.   :150.00          
+ total_intensity_score
+ Min.   :  1.00       
+ 1st Qu.: 65.00       
+ Median : 68.00       
+ Mean   : 78.94       
+ 3rd Qu.: 77.00       
+ Max.   :238.00       
+                         vars  n  mean    sd median trimmed   mad min max range  skew kurtosis   se
+year*                       1 52 26.50 15.15   26.5   26.50 19.27   1  52    51  0.00    -1.27 2.10
+total_other_intensity       2 52  7.17  8.88    3.5    6.14  5.19   0  23    23  0.99    -0.69 1.23
+total_crimea_intensity      3 52 50.00 27.65   65.0   54.17  0.00   0  65    65 -1.24    -0.47 3.83
+total_invasion_intensity    4 52 21.77 51.66    0.0    9.50  0.00   0 150   150  1.88     1.60 7.16
+total_intensity_score       5 52 78.94 71.20   68.0   69.69  8.90   1 238   237  1.16     0.47 9.87
+     year             WTI_price       Brent_price    
+ Length:109         Min.   : 12.94   Min.   : 11.19  
+ Class :character   1st Qu.: 38.35   1st Qu.: 35.45  
+ Mode  :character   Median : 59.44   Median : 61.75  
+                    Mean   : 60.29   Mean   : 63.00  
+                    3rd Qu.: 78.41   3rd Qu.: 83.00  
+                    Max.   :123.95   Max.   :121.40  
+            vars   n  mean    sd median trimmed   mad   min    max  range skew kurtosis   se
+year*          1 109 55.00 31.61  55.00   55.00 40.03  1.00 109.00 108.00 0.00    -1.23 3.03
+WTI_price      2 109 60.29 26.97  59.44   59.95 28.47 12.94 123.95 111.02 0.11    -0.92 2.58
+Brent_price    3 109 63.00 30.45  61.75   62.51 32.57 11.19 121.40 110.21 0.15    -1.02 2.92
+     year           total_other_intensity total_crimea_intensity total_invasion_intensity
+ Length:52          Min.   : 0.000        Min.   : 0             Min.   :  0.00          
+ Class :character   1st Qu.: 0.000        1st Qu.:65             1st Qu.:  0.00          
+ Mode  :character   Median : 3.500        Median :65             Median :  0.00          
+                    Mean   : 7.173        Mean   :50             Mean   : 21.77          
+                    3rd Qu.:12.000        3rd Qu.:65             3rd Qu.:  0.00          
+                    Max.   :23.000        Max.   :65             Max.   :150.00          
+ total_intensity_score
+ Min.   :  1.00       
+ 1st Qu.: 65.00       
+ Median : 68.00       
+ Mean   : 78.94       
+ 3rd Qu.: 77.00       
+ Max.   :238.00       
+                         vars  n  mean    sd median trimmed   mad min max range  skew kurtosis   se
+year*                       1 52 26.50 15.15   26.5   26.50 19.27   1  52    51  0.00    -1.27 2.10
+total_other_intensity       2 52  7.17  8.88    3.5    6.14  5.19   0  23    23  0.99    -0.69 1.23
+total_crimea_intensity      3 52 50.00 27.65   65.0   54.17  0.00   0  65    65 -1.24    -0.47 3.83
+total_invasion_intensity    4 52 21.77 51.66    0.0    9.50  0.00   0 150   150  1.88     1.60 7.16
+total_intensity_score       5 52 78.94 71.20   68.0   69.69  8.90   1 238   237  1.16     0.47 9.87
+     year           Government.expenditure....of.GDP.
+ Length:101         Min.   :3.449                    
+ Class :character   1st Qu.:7.104                    
+ Mode  :character   Median :7.585                    
+                    Mean   :7.530                    
+                    3rd Qu.:7.839                    
+                    Max.   :9.712                    
+                                  vars   n  mean    sd median trimmed   mad  min    max  range  skew
+year*                                1 101 51.00 29.30  51.00   51.00 37.06 1.00 101.00 100.00  0.00
+Government.expenditure....of.GDP.    2 101  7.53  0.75   7.58    7.52  0.58 3.45   9.71   6.26 -1.11
+                                  kurtosis   se
+year*                                -1.24 2.92
+Government.expenditure....of.GDP.     7.60 0.07
+     year           Eastern.Europe        Europe        Emerging.and.Developing.Europe
+ Length:105         Min.   :-1.9612   Min.   :-1.8104   Min.   :-1.8223               
+ Class :character   1st Qu.: 0.2774   1st Qu.: 0.3261   1st Qu.: 0.3504               
+ Mode  :character   Median : 0.8443   Median : 0.5507   Median : 0.9016               
+                    Mean   : 0.7406   Mean   : 0.4792   Mean   : 0.8434               
+                    3rd Qu.: 1.4084   3rd Qu.: 0.8368   3rd Qu.: 1.5392               
+                    Max.   : 1.9666   Max.   : 2.0666   Max.   : 2.0588               
+ Emerging.market.and.developing.economies     World        
+ Min.   :-0.7882                          Min.   :-1.0308  
+ 1st Qu.: 0.9839                          1st Qu.: 0.7711  
+ Median : 1.1874                          Median : 0.8605  
+ Mean   : 1.2008                          Mean   : 0.8553  
+ 3rd Qu.: 1.5405                          3rd Qu.: 1.1247  
+ Max.   : 2.0610                          Max.   : 1.9914  
+                                         vars   n  mean    sd median trimmed   mad   min    max  range
+year*                                       1 105 53.00 30.45  53.00   53.00 38.55  1.00 105.00 104.00
+Eastern.Europe                              2 105  0.74  0.86   0.84    0.82  0.84 -1.96   1.97   3.93
+Europe                                      3 105  0.48  0.65   0.55    0.56  0.36 -1.81   2.07   3.88
+Emerging.and.Developing.Europe              4 105  0.84  0.83   0.90    0.92  0.91 -1.82   2.06   3.88
+Emerging.market.and.developing.economies    5 105  1.20  0.52   1.19    1.24  0.37 -0.79   2.06   2.85
+World                                       6 105  0.86  0.47   0.86    0.91  0.26 -1.03   1.99   3.02
+                                          skew kurtosis   se
+year*                                     0.00    -1.23 2.97
+Eastern.Europe                           -0.80     0.45 0.08
+Europe                                   -1.38     3.15 0.06
+Emerging.and.Developing.Europe           -0.83     0.72 0.08
+Emerging.market.and.developing.economies -1.05     2.46 0.05
+World                                    -1.44     3.94 0.05
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+  3.116   4.885   5.831   5.439   6.041   6.460       2 
+Warning message:
+Removed 57 rows containing non-finite outside the scale range (`stat_density()`). 
+Rows in rus_sanctions: 39 
+Unique values in trade : 0 1 
+Unique values in financial : 0 1 
+Unique values in military : 0 1 
+Unique values in arms : 0 1 
+Unique values in travel : 0 1 
+$trade
+NULL
+
+$financial
+NULL
+
+$military
+NULL
+
+$arms
+NULL
+
+$travel
+NULL
+
+Summarized sanction counts:
+# A tibble: 15 × 3
+   category sanction_type count
+   <fct>    <fct>         <int>
+ 1 Crimea   Trade             7
+ 2 Crimea   Financial         8
+ 3 Crimea   Military          4
+ 4 Crimea   Arms              3
+ 5 Crimea   Travel            5
+ 6 Invasion Trade            20
+ 7 Invasion Financial        21
+ 8 Invasion Military          1
+ 9 Invasion Arms              1
+10 Invasion Travel           13
+11 Other    Trade             3
+12 Other    Financial         3
+13 Other    Military          1
+14 Other    Arms              1
+15 Other    Travel            1
+Rows in sanction_types_by_category: 15 
+Plot saved as sanction_distribution_plot.png
+
+	Augmented Dickey-Fuller Test
+
+data:  na.omit(master_ds$log_gdp)
+Dickey-Fuller = -3.0992, Lag order = 4, p-value = 0.1207
+alternative hypothesis: stationary
+
+
+	Augmented Dickey-Fuller Test
+
+data:  na.omit(master_ds$log_TIS)
+Dickey-Fuller = -2.015, Lag order = 3, p-value = 0.5684
+alternative hypothesis: stationary
+
+
+	Augmented Dickey-Fuller Test
+
+data:  na.omit(master_ds$log_Brent)
+Dickey-Fuller = -2.7614, Lag order = 4, p-value = 0.2608
+alternative hypothesis: stationary
+
+
+	Augmented Dickey-Fuller Test
+
+data:  na.omit(master_ds$gdp_exp)
+Dickey-Fuller = -4.2238, Lag order = 4, p-value = 0.01
+alternative hypothesis: stationary
+
+Warning message:
+In adf.test(na.omit(master_ds$gdp_exp)) :
+  p-value smaller than printed p-value
+
+	Augmented Dickey-Fuller Test
+
+data:  na.omit(master_ds$World)
+Dickey-Fuller = -4.5099, Lag order = 4, p-value = 0.01
+alternative hypothesis: stationary
+
+Warning message:
+In adf.test(na.omit(master_ds$World)) :
+  p-value smaller than printed p-value
+
+	Augmented Dickey-Fuller Test
+
+data:  diff(na.omit(master_ds$log_gdp))
+Dickey-Fuller = -7.2039, Lag order = 4, p-value = 0.01
+alternative hypothesis: stationary
+
+Warning message:
+In adf.test(diff(na.omit(master_ds$log_gdp)), k = 4) :
+  p-value smaller than printed p-value
+
+	Augmented Dickey-Fuller Test
+
+data:  diff(na.omit(master_ds$log_TIS))
+Dickey-Fuller = -3.2924, Lag order = 4, p-value = 0.08243
+alternative hypothesis: stationary
+
+
+	Augmented Dickey-Fuller Test
+
+data:  diff(na.omit(master_ds$log_Brent))
+Dickey-Fuller = -5.0476, Lag order = 4, p-value = 0.01
+alternative hypothesis: stationary
+
+Warning message:
+In adf.test(diff(na.omit(master_ds$log_Brent)), k = 4) :
+  p-value smaller than printed p-value
+Warning messages:
+1: In adf.test(na.omit(master_ds$gdp_exp)) :
+  p-value smaller than printed p-value
+2: In adf.test(na.omit(master_ds$World)) :
+  p-value smaller than printed p-value
+3: In adf.test(diff(na.omit(master_ds$log_gdp)), k = 4) :
+  p-value smaller than printed p-value
+4: In adf.test(diff(na.omit(master_ds$log_Brent)), k = 4) :
+  p-value smaller than printed p-value
+5: In adf.test(na.omit(master_ds$gdp_exp)) :
+  p-value smaller than printed p-value
+6: In adf.test(na.omit(master_ds$World)) :
+  p-value smaller than printed p-value
+7: In adf.test(diff(na.omit(master_ds$log_gdp)), k = 4) :
+  p-value smaller than printed p-value
+8: In adf.test(diff(na.omit(master_ds$log_Brent)), k = 4) :
+  p-value smaller than printed p-value
+
+ADF Unit Root Test Results
+===============================
+   Variable   Statistic P_value
+-------------------------------
+1   log_gdp    -3.099    0.121 
+2   log_TIS    -2.015    0.568 
+3  log_Brent   -2.761    0.261 
+4   Gov.Exp    -4.224    0.010 
+5    World     -4.510    0.010 
+6  D.log_gdp   -7.204    0.010 
+7  D.log_TIS   -3.292    0.082 
+8 D.log_Brent  -5.048    0.010 
+-------------------------------
+Granger causality test
+
+Model 1: log_gdp ~ Lags(log_gdp, 1:2) + Lags(log_TIS, 1:2)
+Model 2: log_gdp ~ Lags(log_gdp, 1:2)
+  Res.Df Df      F Pr(>F)
+1     45                 
+2     47 -2 1.9296  0.157
+
+Granger Test Results
+=========================
+  Res.Df Df   F   Pr(> F)
+-------------------------
+1   45                   
+2   47   -2 1.930  0.157 
+-------------------------
+
+Time series regression with "zooreg" data:
+Start = 2009 Q2, End = 2023 Q1
+
+Call:
+dynlm(formula = log_gdp ~ L(log_gdp, 1:2) + L(log_TIS, 0:3) + 
+    L(log_Brent, 0:2) + L(gdp_exp, 0:2) + L(World, 0:2), data = ts_master)
+
+Residuals:
+     Min       1Q   Median       3Q      Max 
+-0.25736 -0.04337 -0.00090  0.06617  0.13388 
+
+Coefficients:
+                   Estimate Std. Error t value Pr(>|t|)    
+(Intercept)         4.06739    1.63208   2.492  0.01913 *  
+L(log_gdp, 1:2)1    0.14716    0.17064   0.862  0.39607    
+L(log_gdp, 1:2)2   -0.52497    0.16671  -3.149  0.00398 ** 
+L(log_TIS, 0:3)1   -0.30052    0.16431  -1.829  0.07847 .  
+L(log_TIS, 0:3)2    0.01566    0.17875   0.088  0.93084    
+L(log_TIS, 0:3)3    0.29157    0.17918   1.627  0.11529    
+L(log_TIS, 0:3)4    0.10772    0.18037   0.597  0.55533    
+L(log_Brent, 0:2)1  0.59268    0.14249   4.160  0.00029 ***
+L(log_Brent, 0:2)2  0.03510    0.16245   0.216  0.83054    
+L(log_Brent, 0:2)3  0.11067    0.13655   0.810  0.42476    
+L(gdp_exp, 0:2)1   -0.03387    0.66211  -0.051  0.95958    
+L(gdp_exp, 0:2)2   -0.08798    1.23133  -0.071  0.94357    
+L(gdp_exp, 0:2)3    0.22138    0.69836   0.317  0.75369    
+L(World, 0:2)1     -0.79767    0.39426  -2.023  0.05305 .  
+L(World, 0:2)2      1.02275    0.73205   1.397  0.17376    
+L(World, 0:2)3     -0.46574    0.43005  -1.083  0.28839    
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+Residual standard error: 0.1053 on 27 degrees of freedom
+  (42 observations deleted due to missingness)
+Multiple R-squared:  0.7914,	Adjusted R-squared:  0.6755 
+F-statistic: 6.828 on 15 and 27 DF,  p-value: 9.012e-06
+
+
+t test of coefficients:
+
+                    Estimate Std. Error t value  Pr(>|t|)    
+(Intercept)         4.067392   1.398459  2.9085 0.0071820 ** 
+L(log_gdp, 1:2)1    0.147159   0.162066  0.9080 0.3719029    
+L(log_gdp, 1:2)2   -0.524967   0.202902 -2.5873 0.0153795 *  
+L(log_TIS, 0:3)1   -0.300525   0.098985 -3.0361 0.0052586 ** 
+L(log_TIS, 0:3)2    0.015660   0.107588  0.1456 0.8853566    
+L(log_TIS, 0:3)3    0.291574   0.076966  3.7883 0.0007727 ***
+L(log_TIS, 0:3)4    0.107721   0.135525  0.7948 0.4336373    
+L(log_Brent, 0:2)1  0.592684   0.172495  3.4360 0.0019251 ** 
+L(log_Brent, 0:2)2  0.035103   0.169556  0.2070 0.8375406    
+L(log_Brent, 0:2)3  0.110671   0.127074  0.8709 0.3914797    
+L(gdp_exp, 0:2)1   -0.033870   0.614230 -0.0551 0.9564311    
+L(gdp_exp, 0:2)2   -0.087979   1.177613 -0.0747 0.9409965    
+L(gdp_exp, 0:2)3    0.221376   0.680334  0.3254 0.7473921    
+L(World, 0:2)1     -0.797672   0.335542 -2.3773 0.0247867 *  
+L(World, 0:2)2      1.022751   0.610934  1.6741 0.1056628    
+L(World, 0:2)3     -0.465735   0.348427 -1.3367 0.1924829    
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+[1] -27.63344
+
+ARDL Results
+===============================================
+                        Dependent variable:    
+                    ---------------------------
+                              log_gdp          
+-----------------------------------------------
+L(log_gdp, 1:2)1               0.147           
+                              (0.171)          
+                                               
+L(log_gdp, 1:2)2             -0.525***         
+                              (0.167)          
+                                               
+L(log_TIS, 0:3)1              -0.301*          
+                              (0.164)          
+                                               
+L(log_TIS, 0:3)2               0.016           
+                              (0.179)          
+                                               
+L(log_TIS, 0:3)3               0.292           
+                              (0.179)          
+                                               
+L(log_TIS, 0:3)4               0.108           
+                              (0.180)          
+                                               
+L(log_Brent, 0:2)1           0.593***          
+                              (0.142)          
+                                               
+L(log_Brent, 0:2)2             0.035           
+                              (0.162)          
+                                               
+L(log_Brent, 0:2)3             0.111           
+                              (0.137)          
+                                               
+L(gdp_exp, 0:2)1              -0.034           
+                              (0.662)          
+                                               
+L(gdp_exp, 0:2)2              -0.088           
+                              (1.231)          
+                                               
+L(gdp_exp, 0:2)3               0.221           
+                              (0.698)          
+                                               
+L(World, 0:2)1                -0.798*          
+                              (0.394)          
+                                               
+L(World, 0:2)2                 1.023           
+                              (0.732)          
+                                               
+L(World, 0:2)3                -0.466           
+                              (0.430)          
+                                               
+Constant                      4.067**          
+                              (1.632)          
+                                               
+-----------------------------------------------
+Observations                    43             
+R2                             0.791           
+Adjusted R2                    0.675           
+Residual Std. Error       0.105 (df = 27)      
+F Statistic           6.828*** (df = 15; 27)   
+===============================================
+Note:               *p<0.1; **p<0.05; ***p<0.01
+
+Time series regression with "zooreg" data:
+Start = 2008 Q4, End = 2023 Q1
+
+Call:
+dynlm(formula = log_gdp ~ L(log_gdp, 1) + L(log_TIS, 0:1) + L(log_Brent, 
+    0:1) + L(gdp_exp, 0:1) + L(World, 0:1), data = ts_master)
+
+Residuals:
+     Min       1Q   Median       3Q      Max 
+-0.43206 -0.06340  0.00627  0.07902  0.17970 
+
+Coefficients:
+                   Estimate Std. Error t value Pr(>|t|)   
+(Intercept)         2.31413    1.00239   2.309  0.02666 * 
+L(log_gdp, 1)       0.25911    0.16257   1.594  0.11950   
+L(log_TIS, 0:1)1   -0.22866    0.15935  -1.435  0.15969   
+L(log_TIS, 0:1)2    0.28333    0.15993   1.772  0.08471 . 
+L(log_Brent, 0:1)1  0.37793    0.11573   3.266  0.00236 **
+L(log_Brent, 0:1)2  0.02364    0.13588   0.174  0.86281   
+L(gdp_exp, 0:1)1   -0.00883    0.16032  -0.055  0.95637   
+L(gdp_exp, 0:1)2    0.03781    0.15139   0.250  0.80414   
+L(World, 0:1)1     -0.10185    0.10293  -0.990  0.32883   
+L(World, 0:1)2      0.06999    0.09949   0.704  0.48614   
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+Residual standard error: 0.1262 on 37 degrees of freedom
+  (42 observations deleted due to missingness)
+Multiple R-squared:  0.6838,	Adjusted R-squared:  0.6069 
+F-statistic: 8.891 on 9 and 37 DF,  p-value: 5.624e-07
+
+[1] -30.06402
+
+Time series regression with "zooreg" data:
+Start = 2009 Q1, End = 2023 Q1
+
+Call:
+dynlm(formula = log_gdp ~ L(log_gdp, 1) + L(log_TIS, 0:1) + L(log_Brent, 
+    0:1) + L(gdp_exp, 0:1) + L(World, 0:1) + L(log_TIS, 2), data = ts_master)
+
+Residuals:
+     Min       1Q   Median       3Q      Max 
+-0.39852 -0.06519  0.01083  0.06821  0.16688 
+
+Coefficients:
+                   Estimate Std. Error t value Pr(>|t|)    
+(Intercept)         1.34044    1.03996   1.289 0.206121    
+L(log_gdp, 1)       0.23477    0.15838   1.482 0.147450    
+L(log_TIS, 0:1)1   -0.38020    0.16301  -2.332 0.025739 *  
+L(log_TIS, 0:1)2    0.06024    0.19361   0.311 0.757575    
+L(log_Brent, 0:1)1  0.55147    0.13307   4.144 0.000214 ***
+L(log_Brent, 0:1)2 -0.06428    0.14584  -0.441 0.662190    
+L(gdp_exp, 0:1)1    0.14671    0.16685   0.879 0.385409    
+L(gdp_exp, 0:1)2   -0.03324    0.15114  -0.220 0.827241    
+L(World, 0:1)1     -0.07060    0.09930  -0.711 0.481940    
+L(World, 0:1)2      0.07918    0.09639   0.821 0.417104    
+L(log_TIS, 2)       0.39582    0.16862   2.347 0.024869 *  
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+Residual standard error: 0.12 on 34 degrees of freedom
+  (42 observations deleted due to missingness)
+Multiple R-squared:  0.7226,	Adjusted R-squared:  0.641 
+F-statistic: 8.858 on 10 and 34 DF,  p-value: 6.06e-07
+
+[1] -30.08281
+Long-run elasticity of log_TIS on log_GDP: 0.1342 
+
+	Durbin-Watson test
+
+data:  model_ardl
+DW = 2.0791, p-value = 0.1731
+alternative hypothesis: true autocorrelation is greater than 0
+
+
+	studentized Breusch-Pagan test
+
+data:  model_ardl
+BP = 13.525, df = 15, p-value = 0.5618
+
+
+
+Table: Table: Variance Inflation Factors (VIFs)
+
+|          |Variable  |  VIF|
+|:---------|:---------|----:|
+|log_TIS   |log_TIS   | 1.08|
+|log_Brent |log_Brent | 1.42|
+|gdp_exp   |gdp_exp   | 1.77|
+|World     |World     | 2.13|
+<ggproto object: Class ScaleDiscrete, Scale, gg>
+    aesthetics: fill
+    axis_order: function
+    break_info: function
+    break_positions: function
+    breaks: waiver
+    call: call
+    clone: function
+    dimension: function
+    drop: TRUE
+    expand: waiver
+    get_breaks: function
+    get_breaks_minor: function
+    get_labels: function
+    get_limits: function
+    get_transformation: function
+    guide: legend
+    is_discrete: function
+    is_empty: function
+    labels: Crimea Sanctions Invasion Sanctions Other Sanctions
+    limits: function
+    make_sec_title: function
+    make_title: function
+    map: function
+    map_df: function
+    n.breaks.cache: NULL
+    na.translate: TRUE
+    na.value: grey50
+    name: waiver
+    palette: function
+    palette.cache: NULL
+    position: left
+    range: environment
+    rescale: function
+    reset: function
+    train: function
+    train_df: function
+    transform: function
+    transform_df: function
+    super:  <ggproto object: Class ScaleDiscrete, Scale, gg>
+Warning message:
+Removed 1 row containing missing values or values outside the scale range (`geom_line()`). 
+Warning messages:
+1: Removed 2 rows containing missing values or values outside the scale range (`geom_tile()`). 
+2: Removed 1 row containing missing values or values outside the scale range (`geom_line()`). 
+
+--- Optimal Lags by Criteria ---
+AIC(n)  HQ(n)  SC(n) FPE(n) 
+     6      6      6      6 
+
+VAR Estimation Results:
+========================= 
+Endogenous variables: log_gdp, log_TIS, log_Brent, gdp_exp, World 
+Deterministic variables: const 
+Sample size: 43 
+Log Likelihood: 419.004 
+Roots of the characteristic polynomial:
+1.071 1.071 1.038 1.038     1     1 0.996 0.996 0.9815 0.9778 0.9778 0.962 0.962 0.9605 0.9605 0.9465 0.9465 0.8959 0.8959 0.8714 0.8714 0.8593 0.8593 0.8253 0.8253 0.6576 0.6576 0.6063 0.5367 0.5367
+Call:
+VAR(y = var_ts, p = lag_select$selection[1], type = "const")
+
+
+Estimation results for equation log_gdp: 
+======================================== 
+log_gdp = log_gdp.l1 + log_TIS.l1 + log_Brent.l1 + gdp_exp.l1 + World.l1 + log_gdp.l2 + log_TIS.l2 + log_Brent.l2 + gdp_exp.l2 + World.l2 + log_gdp.l3 + log_TIS.l3 + log_Brent.l3 + gdp_exp.l3 + World.l3 + log_gdp.l4 + log_TIS.l4 + log_Brent.l4 + gdp_exp.l4 + World.l4 + log_gdp.l5 + log_TIS.l5 + log_Brent.l5 + gdp_exp.l5 + World.l5 + log_gdp.l6 + log_TIS.l6 + log_Brent.l6 + gdp_exp.l6 + World.l6 + const 
+
+              Estimate Std. Error t value Pr(>|t|)    
+log_gdp.l1    0.919736   0.174245   5.278 0.000195 ***
+log_TIS.l1    0.202307   0.075424   2.682 0.019954 *  
+log_Brent.l1 -0.273370   0.160437  -1.704 0.114129    
+gdp_exp.l1   -1.652694   0.679941  -2.431 0.031695 *  
+World.l1     -0.650002   0.789214  -0.824 0.426229    
+log_gdp.l2   -0.125945   0.351822  -0.358 0.726578    
+log_TIS.l2   -0.049768   0.079897  -0.623 0.545005    
+log_Brent.l2 -0.207425   0.159385  -1.301 0.217550    
+gdp_exp.l2    2.340995   1.251351   1.871 0.085954 .  
+World.l2      1.729021   1.085174   1.593 0.137075    
+log_gdp.l3    0.008892   0.256336   0.035 0.972899    
+log_TIS.l3   -0.073507   0.070269  -1.046 0.316143    
+log_Brent.l3  0.174121   0.114993   1.514 0.155867    
+gdp_exp.l3   -1.328983   1.330233  -0.999 0.337486    
+World.l3     -1.651072   0.970794  -1.701 0.114737    
+log_gdp.l4    0.694437   0.297965   2.331 0.038029 *  
+log_TIS.l4   -0.152434   0.083174  -1.833 0.091761 .  
+log_Brent.l4 -0.196534   0.130902  -1.501 0.159105    
+gdp_exp.l4    0.378667   1.300134   0.291 0.775831    
+World.l4      0.432628   0.936085   0.462 0.652228    
+log_gdp.l5   -0.545199   0.290336  -1.878 0.084916 .  
+log_TIS.l5    0.170677   0.087866   1.942 0.075917 .  
+log_Brent.l5 -0.146936   0.136558  -1.076 0.303086    
+gdp_exp.l5    0.207652   1.243335   0.167 0.870142    
+World.l5      0.845871   0.842526   1.004 0.335208    
+log_gdp.l6   -0.099221   0.180683  -0.549 0.592979    
+log_TIS.l6   -0.093338   0.048851  -1.911 0.080232 .  
+log_Brent.l6  0.251383   0.111329   2.258 0.043365 *  
+gdp_exp.l6   -0.608191   0.635458  -0.957 0.357408    
+World.l6     -1.006946   0.409678  -2.458 0.030154 *  
+const         7.874153   5.587697   1.409 0.184161    
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+
+Residual standard error: 0.04687 on 12 degrees of freedom
+Multiple R-Squared: 0.9833,	Adjusted R-squared: 0.9417 
+F-statistic: 23.61 on 30 and 12 DF,  p-value: 6.773e-07 
+
+
+Estimation results for equation log_TIS: 
+======================================== 
+log_TIS = log_gdp.l1 + log_TIS.l1 + log_Brent.l1 + gdp_exp.l1 + World.l1 + log_gdp.l2 + log_TIS.l2 + log_Brent.l2 + gdp_exp.l2 + World.l2 + log_gdp.l3 + log_TIS.l3 + log_Brent.l3 + gdp_exp.l3 + World.l3 + log_gdp.l4 + log_TIS.l4 + log_Brent.l4 + gdp_exp.l4 + World.l4 + log_gdp.l5 + log_TIS.l5 + log_Brent.l5 + gdp_exp.l5 + World.l5 + log_gdp.l6 + log_TIS.l6 + log_Brent.l6 + gdp_exp.l6 + World.l6 + const 
+
+             Estimate Std. Error t value Pr(>|t|)
+log_gdp.l1     3.4920     2.4509   1.425    0.180
+log_TIS.l1    -0.4606     1.0609  -0.434    0.672
+log_Brent.l1  -1.7780     2.2567  -0.788    0.446
+gdp_exp.l1     8.5339     9.5640   0.892    0.390
+World.l1      10.8025    11.1010   0.973    0.350
+log_gdp.l2     1.4878     4.9487   0.301    0.769
+log_TIS.l2    -0.3106     1.1238  -0.276    0.787
+log_Brent.l2  -1.6971     2.2419  -0.757    0.464
+gdp_exp.l2   -10.5843    17.6014  -0.601    0.559
+World.l2     -12.6544    15.2640  -0.829    0.423
+log_gdp.l3     3.0885     3.6056   0.857    0.408
+log_TIS.l3     0.1340     0.9884   0.136    0.894
+log_Brent.l3  -0.6701     1.6175  -0.414    0.686
+gdp_exp.l3     4.3081    18.7110   0.230    0.822
+World.l3       3.1765    13.6551   0.233    0.820
+log_gdp.l4     3.1422     4.1912   0.750    0.468
+log_TIS.l4     0.7405     1.1699   0.633    0.539
+log_Brent.l4  -1.3357     1.8413  -0.725    0.482
+gdp_exp.l4    -5.8208    18.2876  -0.318    0.756
+World.l4      -3.2409    13.1669  -0.246    0.810
+log_gdp.l5     1.9123     4.0839   0.468    0.648
+log_TIS.l5     0.5696     1.2359   0.461    0.653
+log_Brent.l5  -1.3952     1.9208  -0.726    0.482
+gdp_exp.l5     3.4459    17.4887   0.197    0.847
+World.l5      10.6532    11.8509   0.899    0.386
+log_gdp.l6     2.0321     2.5415   0.800    0.439
+log_TIS.l6    -1.0647     0.6871  -1.549    0.147
+log_Brent.l6  -0.9486     1.5659  -0.606    0.556
+gdp_exp.l6     0.7393     8.9383   0.083    0.935
+World.l6      -6.2455     5.7625  -1.084    0.300
+const        -58.3067    78.5962  -0.742    0.472
+
+
+Residual standard error: 0.6592 on 12 degrees of freedom
+Multiple R-Squared: 0.9329,	Adjusted R-squared: 0.7653 
+F-statistic: 5.565 on 30 and 12 DF,  p-value: 0.001551 
+
+
+Estimation results for equation log_Brent: 
+========================================== 
+log_Brent = log_gdp.l1 + log_TIS.l1 + log_Brent.l1 + gdp_exp.l1 + World.l1 + log_gdp.l2 + log_TIS.l2 + log_Brent.l2 + gdp_exp.l2 + World.l2 + log_gdp.l3 + log_TIS.l3 + log_Brent.l3 + gdp_exp.l3 + World.l3 + log_gdp.l4 + log_TIS.l4 + log_Brent.l4 + gdp_exp.l4 + World.l4 + log_gdp.l5 + log_TIS.l5 + log_Brent.l5 + gdp_exp.l5 + World.l5 + log_gdp.l6 + log_TIS.l6 + log_Brent.l6 + gdp_exp.l6 + World.l6 + const 
+
+              Estimate Std. Error t value Pr(>|t|)  
+log_gdp.l1     0.61825    0.44510   1.389   0.1901  
+log_TIS.l1     0.11307    0.19267   0.587   0.5682  
+log_Brent.l1  -0.66264    0.40983  -1.617   0.1319  
+gdp_exp.l1    -0.37799    1.73689  -0.218   0.8314  
+World.l1       2.59260    2.01602   1.286   0.2227  
+log_gdp.l2     1.71204    0.89872   1.905   0.0810 .
+log_TIS.l2    -0.19715    0.20409  -0.966   0.3531  
+log_Brent.l2  -0.29140    0.40714  -0.716   0.4879  
+gdp_exp.l2    -0.63366    3.19654  -0.198   0.8462  
+World.l2      -2.94861    2.77204  -1.064   0.3084  
+log_gdp.l3     1.10406    0.65480   1.686   0.1176  
+log_TIS.l3    -0.38666    0.17950  -2.154   0.0523 .
+log_Brent.l3  -0.10600    0.29375  -0.361   0.7245  
+gdp_exp.l3     3.45282    3.39804   1.016   0.3296  
+World.l3       2.26844    2.47986   0.915   0.3783  
+log_gdp.l4     1.30161    0.76114   1.710   0.1130  
+log_TIS.l4    -0.40943    0.21247  -1.927   0.0780 .
+log_Brent.l4  -0.34753    0.33439  -1.039   0.3192  
+gdp_exp.l4    -0.34060    3.32115  -0.103   0.9200  
+World.l4      -0.73076    2.39120  -0.306   0.7651  
+log_gdp.l5     0.60509    0.74165   0.816   0.4305  
+log_TIS.l5     0.54621    0.22445   2.434   0.0315 *
+log_Brent.l5  -0.20006    0.34883  -0.574   0.5769  
+gdp_exp.l5    -5.19506    3.17606  -1.636   0.1278  
+World.l5      -0.47046    2.15220  -0.219   0.8306  
+log_gdp.l6    -0.27736    0.46155  -0.601   0.5591  
+log_TIS.l6     0.01353    0.12479   0.108   0.9154  
+log_Brent.l6   0.07897    0.28439   0.278   0.7860  
+gdp_exp.l6     3.11055    1.62326   1.916   0.0795 .
+World.l6       0.17958    1.04651   0.172   0.8666  
+const        -18.98132   14.27359  -1.330   0.2083  
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+
+Residual standard error: 0.1197 on 12 degrees of freedom
+Multiple R-Squared: 0.9629,	Adjusted R-squared: 0.8702 
+F-statistic: 10.38 on 30 and 12 DF,  p-value: 6.437e-05 
+
+
+Estimation results for equation gdp_exp: 
+======================================== 
+gdp_exp = log_gdp.l1 + log_TIS.l1 + log_Brent.l1 + gdp_exp.l1 + World.l1 + log_gdp.l2 + log_TIS.l2 + log_Brent.l2 + gdp_exp.l2 + World.l2 + log_gdp.l3 + log_TIS.l3 + log_Brent.l3 + gdp_exp.l3 + World.l3 + log_gdp.l4 + log_TIS.l4 + log_Brent.l4 + gdp_exp.l4 + World.l4 + log_gdp.l5 + log_TIS.l5 + log_Brent.l5 + gdp_exp.l5 + World.l5 + log_gdp.l6 + log_TIS.l6 + log_Brent.l6 + gdp_exp.l6 + World.l6 + const 
+
+             Estimate Std. Error t value Pr(>|t|)  
+log_gdp.l1    0.71489    0.34769   2.056   0.0622 .
+log_TIS.l1   -0.21599    0.15050  -1.435   0.1768  
+log_Brent.l1 -0.19676    0.32014  -0.615   0.5503  
+gdp_exp.l1    2.85604    1.35676   2.105   0.0570 .
+World.l1      1.26660    1.57481   0.804   0.4369  
+log_gdp.l2   -0.04407    0.70203  -0.063   0.9510  
+log_TIS.l2    0.01183    0.15943   0.074   0.9421  
+log_Brent.l2 -0.31788    0.31804  -1.000   0.3373  
+gdp_exp.l2   -1.88461    2.49696  -0.755   0.4649  
+World.l2     -0.93119    2.16537  -0.430   0.6748  
+log_gdp.l3    0.45514    0.51150   0.890   0.3911  
+log_TIS.l3    0.06643    0.14022   0.474   0.6442  
+log_Brent.l3 -0.17641    0.22946  -0.769   0.4569  
+gdp_exp.l3   -0.77079    2.65437  -0.290   0.7765  
+World.l3     -0.94453    1.93714  -0.488   0.6346  
+log_gdp.l4    0.49435    0.59456   0.831   0.4220  
+log_TIS.l4    0.16424    0.16597   0.990   0.3419  
+log_Brent.l4 -0.30092    0.26120  -1.152   0.2717  
+gdp_exp.l4   -0.10050    2.59430  -0.039   0.9697  
+World.l4      1.08550    1.86788   0.581   0.5719  
+log_gdp.l5    0.04541    0.57934   0.078   0.9388  
+log_TIS.l5   -0.08957    0.17533  -0.511   0.6187  
+log_Brent.l5 -0.16716    0.27249  -0.613   0.5510  
+gdp_exp.l5    1.38995    2.48097   0.560   0.5856  
+World.l5      0.58281    1.68119   0.347   0.7348  
+log_gdp.l6    0.51324    0.36054   1.424   0.1801  
+log_TIS.l6   -0.12999    0.09748  -1.334   0.2071  
+log_Brent.l6 -0.08430    0.22215  -0.379   0.7110  
+gdp_exp.l6   -0.86197    1.26800  -0.680   0.5095  
+World.l6     -0.73572    0.81748  -0.900   0.3858  
+const        -4.32438   11.14977  -0.388   0.7049  
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+
+Residual standard error: 0.09352 on 12 degrees of freedom
+Multiple R-Squared: 0.9832,	Adjusted R-squared: 0.9413 
+F-statistic: 23.45 on 30 and 12 DF,  p-value: 7.042e-07 
+
+
+Estimation results for equation World: 
+====================================== 
+World = log_gdp.l1 + log_TIS.l1 + log_Brent.l1 + gdp_exp.l1 + World.l1 + log_gdp.l2 + log_TIS.l2 + log_Brent.l2 + gdp_exp.l2 + World.l2 + log_gdp.l3 + log_TIS.l3 + log_Brent.l3 + gdp_exp.l3 + World.l3 + log_gdp.l4 + log_TIS.l4 + log_Brent.l4 + gdp_exp.l4 + World.l4 + log_gdp.l5 + log_TIS.l5 + log_Brent.l5 + gdp_exp.l5 + World.l5 + log_gdp.l6 + log_TIS.l6 + log_Brent.l6 + gdp_exp.l6 + World.l6 + const 
+
+             Estimate Std. Error t value Pr(>|t|)    
+log_gdp.l1   -0.62264    0.13913  -4.475 0.000759 ***
+log_TIS.l1    0.11966    0.06022   1.987 0.070244 .  
+log_Brent.l1  0.02660    0.12810   0.208 0.839008    
+gdp_exp.l1   -0.07064    0.54291  -0.130 0.898632    
+World.l1      1.75555    0.63017   2.786 0.016471 *  
+log_gdp.l2    0.22778    0.28092   0.811 0.433250    
+log_TIS.l2   -0.02189    0.06380  -0.343 0.737436    
+log_Brent.l2  0.09597    0.12726   0.754 0.465335    
+gdp_exp.l2   -0.79484    0.99917  -0.795 0.441776    
+World.l2     -1.65274    0.86648  -1.907 0.080683 .  
+log_gdp.l3   -0.19740    0.20468  -0.964 0.353857    
+log_TIS.l3   -0.04478    0.05611  -0.798 0.440332    
+log_Brent.l3  0.12202    0.09182   1.329 0.208606    
+gdp_exp.l3    1.59038    1.06216   1.497 0.160146    
+World.l3      1.36535    0.77515   1.761 0.103605    
+log_gdp.l4   -0.20235    0.23792  -0.851 0.411693    
+log_TIS.l4   -0.21301    0.06641  -3.207 0.007528 ** 
+log_Brent.l4  0.16466    0.10452   1.575 0.141160    
+gdp_exp.l4    0.72945    1.03812   0.703 0.495673    
+World.l4     -0.91804    0.74744  -1.228 0.242898    
+log_gdp.l5    0.26516    0.23183   1.144 0.275014    
+log_TIS.l5    0.19701    0.07016   2.808 0.015805 *  
+log_Brent.l5  0.03794    0.10904   0.348 0.733882    
+gdp_exp.l5   -2.66329    0.99277  -2.683 0.019938 *  
+World.l5     -0.04256    0.67273  -0.063 0.950596    
+log_gdp.l6   -0.26620    0.14427  -1.845 0.089821 .  
+log_TIS.l6    0.02511    0.03901   0.644 0.531863    
+log_Brent.l6 -0.02575    0.08889  -0.290 0.777006    
+gdp_exp.l6    1.52464    0.50740   3.005 0.010968 *  
+World.l6      0.28434    0.32712   0.869 0.401769    
+const         0.41516    4.46163   0.093 0.927399    
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+
+Residual standard error: 0.03742 on 12 degrees of freedom
+Multiple R-Squared: 0.9989,	Adjusted R-squared: 0.9962 
+F-statistic: 365.2 on 30 and 12 DF,  p-value: 6.564e-14 
+
+
+
+Covariance matrix of residuals:
+             log_gdp    log_TIS  log_Brent    gdp_exp      World
+log_gdp    2.196e-03  8.152e-05 -0.0006032  0.0001721 -0.0004821
+log_TIS    8.152e-05  4.346e-01 -0.0123202  0.0584842 -0.0133468
+log_Brent -6.032e-04 -1.232e-02  0.0143327 -0.0037268  0.0030392
+gdp_exp    1.721e-04  5.848e-02 -0.0037268  0.0087457 -0.0025674
+World     -4.821e-04 -1.335e-02  0.0030392 -0.0025674  0.0014004
+
+Correlation matrix of residuals:
+            log_gdp   log_TIS log_Brent  gdp_exp   World
+log_gdp    1.000000  0.002638   -0.1075  0.03927 -0.2749
+log_TIS    0.002638  1.000000   -0.1561  0.94866 -0.5410
+log_Brent -0.107506 -0.156107    1.0000 -0.33287  0.6784
+gdp_exp    0.039268  0.948658   -0.3329  1.00000 -0.7336
+World     -0.274888 -0.541027    0.6784 -0.73363  1.0000
+
+
+
+<table style="text-align:center"><caption><strong>Vector Autoregression (VAR) Model Results</strong></caption>
+<tr><td colspan="6" style="border-bottom: 1px solid black"></td></tr><tr><td style="text-align:left"></td><td colspan="5"><em>Dependent variable:</em></td></tr>
+<tr><td></td><td colspan="5" style="border-bottom: 1px solid black"></td></tr>
+<tr><td style="text-align:left"></td><td colspan="5">y</td></tr>
+<tr><td style="text-align:left"></td><td>(1)</td><td>(2)</td><td>(3)</td><td>(4)</td><td>(5)</td></tr>
+<tr><td colspan="6" style="border-bottom: 1px solid black"></td></tr><tr><td style="text-align:left">log_gdp.l1</td><td>0.920<sup>***</sup></td><td>3.492</td><td>0.618</td><td>0.715<sup>*</sup></td><td>-0.623<sup>***</sup></td></tr>
+<tr><td style="text-align:left"></td><td>(0.174)</td><td>(2.451)</td><td>(0.445)</td><td>(0.348)</td><td>(0.139)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log_TIS.l1</td><td>0.202<sup>**</sup></td><td>-0.461</td><td>0.113</td><td>-0.216</td><td>0.120<sup>*</sup></td></tr>
+<tr><td style="text-align:left"></td><td>(0.075)</td><td>(1.061)</td><td>(0.193)</td><td>(0.151)</td><td>(0.060)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log_Brent.l1</td><td>-0.273</td><td>-1.778</td><td>-0.663</td><td>-0.197</td><td>0.027</td></tr>
+<tr><td style="text-align:left"></td><td>(0.160)</td><td>(2.257)</td><td>(0.410)</td><td>(0.320)</td><td>(0.128)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">gdp_exp.l1</td><td>-1.653<sup>**</sup></td><td>8.534</td><td>-0.378</td><td>2.856<sup>*</sup></td><td>-0.071</td></tr>
+<tr><td style="text-align:left"></td><td>(0.680)</td><td>(9.564)</td><td>(1.737)</td><td>(1.357)</td><td>(0.543)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">World.l1</td><td>-0.650</td><td>10.802</td><td>2.593</td><td>1.267</td><td>1.756<sup>**</sup></td></tr>
+<tr><td style="text-align:left"></td><td>(0.789)</td><td>(11.101)</td><td>(2.016)</td><td>(1.575)</td><td>(0.630)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log_gdp.l2</td><td>-0.126</td><td>1.488</td><td>1.712<sup>*</sup></td><td>-0.044</td><td>0.228</td></tr>
+<tr><td style="text-align:left"></td><td>(0.352)</td><td>(4.949)</td><td>(0.899)</td><td>(0.702)</td><td>(0.281)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log_TIS.l2</td><td>-0.050</td><td>-0.311</td><td>-0.197</td><td>0.012</td><td>-0.022</td></tr>
+<tr><td style="text-align:left"></td><td>(0.080)</td><td>(1.124)</td><td>(0.204)</td><td>(0.159)</td><td>(0.064)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log_Brent.l2</td><td>-0.207</td><td>-1.697</td><td>-0.291</td><td>-0.318</td><td>0.096</td></tr>
+<tr><td style="text-align:left"></td><td>(0.159)</td><td>(2.242)</td><td>(0.407)</td><td>(0.318)</td><td>(0.127)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">gdp_exp.l2</td><td>2.341<sup>*</sup></td><td>-10.584</td><td>-0.634</td><td>-1.885</td><td>-0.795</td></tr>
+<tr><td style="text-align:left"></td><td>(1.251)</td><td>(17.601)</td><td>(3.197)</td><td>(2.497)</td><td>(0.999)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">World.l2</td><td>1.729</td><td>-12.654</td><td>-2.949</td><td>-0.931</td><td>-1.653<sup>*</sup></td></tr>
+<tr><td style="text-align:left"></td><td>(1.085)</td><td>(15.264)</td><td>(2.772)</td><td>(2.165)</td><td>(0.866)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log_gdp.l3</td><td>0.009</td><td>3.089</td><td>1.104</td><td>0.455</td><td>-0.197</td></tr>
+<tr><td style="text-align:left"></td><td>(0.256)</td><td>(3.606)</td><td>(0.655)</td><td>(0.511)</td><td>(0.205)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log_TIS.l3</td><td>-0.074</td><td>0.134</td><td>-0.387<sup>*</sup></td><td>0.066</td><td>-0.045</td></tr>
+<tr><td style="text-align:left"></td><td>(0.070)</td><td>(0.988)</td><td>(0.180)</td><td>(0.140)</td><td>(0.056)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log_Brent.l3</td><td>0.174</td><td>-0.670</td><td>-0.106</td><td>-0.176</td><td>0.122</td></tr>
+<tr><td style="text-align:left"></td><td>(0.115)</td><td>(1.617)</td><td>(0.294)</td><td>(0.229)</td><td>(0.092)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">gdp_exp.l3</td><td>-1.329</td><td>4.308</td><td>3.453</td><td>-0.771</td><td>1.590</td></tr>
+<tr><td style="text-align:left"></td><td>(1.330)</td><td>(18.711)</td><td>(3.398)</td><td>(2.654)</td><td>(1.062)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">World.l3</td><td>-1.651</td><td>3.177</td><td>2.268</td><td>-0.945</td><td>1.365</td></tr>
+<tr><td style="text-align:left"></td><td>(0.971)</td><td>(13.655)</td><td>(2.480)</td><td>(1.937)</td><td>(0.775)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log_gdp.l4</td><td>0.694<sup>**</sup></td><td>3.142</td><td>1.302</td><td>0.494</td><td>-0.202</td></tr>
+<tr><td style="text-align:left"></td><td>(0.298)</td><td>(4.191)</td><td>(0.761)</td><td>(0.595)</td><td>(0.238)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log_TIS.l4</td><td>-0.152<sup>*</sup></td><td>0.741</td><td>-0.409<sup>*</sup></td><td>0.164</td><td>-0.213<sup>***</sup></td></tr>
+<tr><td style="text-align:left"></td><td>(0.083)</td><td>(1.170)</td><td>(0.212)</td><td>(0.166)</td><td>(0.066)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log_Brent.l4</td><td>-0.197</td><td>-1.336</td><td>-0.348</td><td>-0.301</td><td>0.165</td></tr>
+<tr><td style="text-align:left"></td><td>(0.131)</td><td>(1.841)</td><td>(0.334)</td><td>(0.261)</td><td>(0.105)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">gdp_exp.l4</td><td>0.379</td><td>-5.821</td><td>-0.341</td><td>-0.100</td><td>0.729</td></tr>
+<tr><td style="text-align:left"></td><td>(1.300)</td><td>(18.288)</td><td>(3.321)</td><td>(2.594)</td><td>(1.038)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">World.l4</td><td>0.433</td><td>-3.241</td><td>-0.731</td><td>1.085</td><td>-0.918</td></tr>
+<tr><td style="text-align:left"></td><td>(0.936)</td><td>(13.167)</td><td>(2.391)</td><td>(1.868)</td><td>(0.747)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log_gdp.l5</td><td>-0.545<sup>*</sup></td><td>1.912</td><td>0.605</td><td>0.045</td><td>0.265</td></tr>
+<tr><td style="text-align:left"></td><td>(0.290)</td><td>(4.084)</td><td>(0.742)</td><td>(0.579)</td><td>(0.232)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log_TIS.l5</td><td>0.171<sup>*</sup></td><td>0.570</td><td>0.546<sup>**</sup></td><td>-0.090</td><td>0.197<sup>**</sup></td></tr>
+<tr><td style="text-align:left"></td><td>(0.088)</td><td>(1.236)</td><td>(0.224)</td><td>(0.175)</td><td>(0.070)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log_Brent.l5</td><td>-0.147</td><td>-1.395</td><td>-0.200</td><td>-0.167</td><td>0.038</td></tr>
+<tr><td style="text-align:left"></td><td>(0.137)</td><td>(1.921)</td><td>(0.349)</td><td>(0.272)</td><td>(0.109)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">gdp_exp.l5</td><td>0.208</td><td>3.446</td><td>-5.195</td><td>1.390</td><td>-2.663<sup>**</sup></td></tr>
+<tr><td style="text-align:left"></td><td>(1.243)</td><td>(17.489)</td><td>(3.176)</td><td>(2.481)</td><td>(0.993)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">World.l5</td><td>0.846</td><td>10.653</td><td>-0.470</td><td>0.583</td><td>-0.043</td></tr>
+<tr><td style="text-align:left"></td><td>(0.843)</td><td>(11.851)</td><td>(2.152)</td><td>(1.681)</td><td>(0.673)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log_gdp.l6</td><td>-0.099</td><td>2.032</td><td>-0.277</td><td>0.513</td><td>-0.266<sup>*</sup></td></tr>
+<tr><td style="text-align:left"></td><td>(0.181)</td><td>(2.541)</td><td>(0.462)</td><td>(0.361)</td><td>(0.144)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log_TIS.l6</td><td>-0.093<sup>*</sup></td><td>-1.065</td><td>0.014</td><td>-0.130</td><td>0.025</td></tr>
+<tr><td style="text-align:left"></td><td>(0.049)</td><td>(0.687)</td><td>(0.125)</td><td>(0.097)</td><td>(0.039)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log_Brent.l6</td><td>0.251<sup>**</sup></td><td>-0.949</td><td>0.079</td><td>-0.084</td><td>-0.026</td></tr>
+<tr><td style="text-align:left"></td><td>(0.111)</td><td>(1.566)</td><td>(0.284)</td><td>(0.222)</td><td>(0.089)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">gdp_exp.l6</td><td>-0.608</td><td>0.739</td><td>3.111<sup>*</sup></td><td>-0.862</td><td>1.525<sup>**</sup></td></tr>
+<tr><td style="text-align:left"></td><td>(0.635)</td><td>(8.938)</td><td>(1.623)</td><td>(1.268)</td><td>(0.507)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">World.l6</td><td>-1.007<sup>**</sup></td><td>-6.246</td><td>0.180</td><td>-0.736</td><td>0.284</td></tr>
+<tr><td style="text-align:left"></td><td>(0.410)</td><td>(5.762)</td><td>(1.047)</td><td>(0.817)</td><td>(0.327)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">const</td><td>7.874</td><td>-58.307</td><td>-18.981</td><td>-4.324</td><td>0.415</td></tr>
+<tr><td style="text-align:left"></td><td>(5.588)</td><td>(78.596)</td><td>(14.274)</td><td>(11.150)</td><td>(4.462)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td colspan="6" style="border-bottom: 1px solid black"></td></tr><tr><td style="text-align:left">Observations</td><td>43</td><td>43</td><td>43</td><td>43</td><td>43</td></tr>
+<tr><td style="text-align:left">R<sup>2</sup></td><td>0.983</td><td>0.933</td><td>0.963</td><td>0.983</td><td>0.999</td></tr>
+<tr><td style="text-align:left">Adjusted R<sup>2</sup></td><td>0.942</td><td>0.765</td><td>0.870</td><td>0.941</td><td>0.996</td></tr>
+<tr><td style="text-align:left">Residual Std. Error (df = 12)</td><td>0.047</td><td>0.659</td><td>0.120</td><td>0.094</td><td>0.037</td></tr>
+<tr><td style="text-align:left">F Statistic (df = 30; 12)</td><td>23.613<sup>***</sup></td><td>5.565<sup>***</sup></td><td>10.383<sup>***</sup></td><td>23.452<sup>***</sup></td><td>365.175<sup>***</sup></td></tr>
+<tr><td colspan="6" style="border-bottom: 1px solid black"></td></tr><tr><td style="text-align:left"><em>Note:</em></td><td colspan="5" style="text-align:right"><sup>*</sup>p<0.1; <sup>**</sup>p<0.05; <sup>***</sup>p<0.01</td></tr>
+</table>
+===== Script ended at 2025-05-05 20:47:06 =====
