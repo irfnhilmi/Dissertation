@@ -1,5 +1,5 @@
 #1 #####
-setwd("/Users/tescocharlie/Desktop/Dissertation")
+setwd("/Users/Desktop/Dissertation")
 
 # === Log File Setup ===
 # Define log file
